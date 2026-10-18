@@ -245,15 +245,16 @@ const nutritionRows=()=>[...(state.data.nutritionRecords||[])].filter(r=>r&&/^\d
 const macroCalories=r=>4*r.protein+4*r.carbs+9*r.fat;
 // El peso proviene del registro más reciente de «Peso y cuerpo».
 function latestNutritionWeight(){return bodyRows()[0]||null;}
-function calculateNutritionMacros(calories,weight){
- const c=Number(calories),w=Number(weight);
+function calculateNutritionMacros(calories,weight,proteinFactor=1.3,fatFactor=0.8){
+ const c=Number(calories),w=Number(weight),p=Number(proteinFactor),f=Number(fatFactor);
  if(!Number.isFinite(c)||!Number.isInteger(c)||c<1||c>10000||!Number.isFinite(w)||w<10||w>600)return {ok:false,reason:'Indica calorías válidas y registra tu peso en Peso y cuerpo.'};
- const protein=Math.round(1.3*w*10)/10;
- const fat=Math.round(.8*w*10)/10;
+ if(!Number.isFinite(p)||!Number.isFinite(f)||p<0||p>10||f<0||f>10)return {ok:false,reason:'Indica factores de proteínas y grasas entre 0 y 10 g por kg de peso.'};
+ const protein=Math.round(p*w*10)/10;
+ const fat=Math.round(f*w*10)/10;
  const rest=c-4*protein-9*fat;
- if(rest < -0.001)return {ok:false,reason:`Con ${fmt(w)} kg, proteínas y grasas ya necesitan ${fmt(4*protein+9*fat)} kcal. Introduce más calorías o revisa el objetivo.`};
+ if(rest < -0.001)return {ok:false,reason:`Con ${fmt(w)} kg y esos factores, proteínas y grasas ya necesitan ${fmt(4*protein+9*fat)} kcal. Baja sus factores o aumenta las calorías.`};
  const carbs=Math.max(0,Math.round(rest/4*10)/10);
- return {ok:true,calories:c,weight:w,protein,fat,carbs};
+ return {ok:true,calories:c,weight:w,proteinFactor:p,fatFactor:f,protein,fat,carbs};
 }
 const nutritionGoalLabel=g=>NUTRITION_GOALS.find(x=>x[0]===g)?.[1]||'Objetivo personalizado';
 function nutritionChart(records,metric){
@@ -270,14 +271,14 @@ function nutritionChart(records,metric){
 function nutritionProgress(){
  const records=nutritionRows(),latest=records[0],metric=NUTRITION_METRICS.find(x=>x[0]===state.nutritionMetric)||NUTRITION_METRICS[0];
  return `${progressSwitch()}<div class="nutrition-progress">
- <div class="section-intro body-intro"><div><p>TUS OBJETIVOS ALIMENTARIOS</p><h2>Nutrición y calorías.</h2><span>Introduce tus calorías diarias. Con tu último peso registrado calculamos automáticamente 1,3 g/kg de proteína, 0,8 g/kg de grasa y el resto en carbohidratos.</span></div><button class="btn btn-primary" data-action="add-nutrition">${I('plus',17)} ${latest?'Nuevo objetivo':'Crear objetivo'}</button></div>
+ <div class="section-intro body-intro"><div><p>TUS OBJETIVOS ALIMENTARIOS</p><h2>Nutrición y calorías.</h2><span>Indica tus calorías y ajusta los gramos por kilo de proteínas y grasas. Los carbohidratos se calculan con las calorías restantes.</span></div><button class="btn btn-primary" data-action="add-nutrition">${I('plus',17)} ${latest?'Nuevo objetivo':'Crear objetivo'}</button></div>
  ${latest?`<div class="nutrition-goal-tag">${I('target',17)} ${esc(nutritionGoalLabel(latest.goal))} <small>Actualizado el ${esc(latest.date)}</small></div>`:''}
  <div class="nutrition-summary">${[['Calorías',latest?.calories,'kcal'],['Proteínas',latest?.protein,'g'],['Carbohidratos',latest?.carbs,'g'],['Grasas',latest?.fat,'g']].map(([label,val,unit])=>`<div class="nutrition-summary-card"><small>${label}</small><strong>${val===undefined?'—':fmt(val)} <em>${unit}</em></strong></div>`).join('')}</div>
- ${latest?.weight?`<p class="nutrition-used-weight">Cálculo basado en ${fmt(latest.weight)} kg de peso corporal registrados al crear este objetivo.</p>`:''}
+ ${latest?.weight?`<p class="nutrition-used-weight">Cálculo basado en ${fmt(latest.weight)} kg · proteínas: ${fmt(latest.proteinFactor??1.3)} g/kg · grasas: ${fmt(latest.fatFactor??0.8)} g/kg.</p>`:''}
  ${latest?`<div class="nutrition-macro-check ${Math.abs(macroCalories(latest)-latest.calories)>100?'warning':''}">${I('info',17)} Tus macros representan <strong>${fmt(macroCalories(latest))} kcal</strong> (proteína y carbohidratos × 4, grasa × 9). ${Math.abs(macroCalories(latest)-latest.calories)>100?'Hay una diferencia respecto a tus calorías objetivo; comprueba tus cantidades.':'Los valores están razonablemente alineados con el objetivo calórico.'}</div>`:''}
  <section class="panel body-chart-panel"><div class="panel-heading"><div><h3>Evolución de tus objetivos</h3><p class="helper-note">Compara calorías o gramos de cada macronutriente entre fechas.</p></div>${I('chart',23)}</div><label class="body-chart-choice">Mostrar en la gráfica<select id="nutritionMetric">${NUTRITION_METRICS.map(([key,label,unit])=>`<option value="${key}" ${metric[0]===key?'selected':''}>${label} (${unit})</option>`).join('')}</select></label>${nutritionChart(records,metric[0])}</section>
  <div class="section-head"><h2>Historial de objetivos</h2></div>
- ${records.length?`<div class="nutrition-records">${records.map(record=>`<article class="nutrition-record"><div class="nutrition-record-top"><div><span class="body-record-date">${esc(record.date)} · ${esc(nutritionGoalLabel(record.goal))}</span><h3>${fmt(record.calories)} <small>kcal al día</small></h3></div><div class="body-record-actions"><button data-action="edit-nutrition" data-id="${esc(record.id)}" aria-label="Editar objetivo del ${esc(record.date)}">${I('edit',18)}</button><button data-action="delete-nutrition" data-id="${esc(record.id)}" aria-label="Eliminar objetivo del ${esc(record.date)}">${I('trash',18)}</button></div></div>${record.weight?`<div class="nutrition-history-weight">Peso utilizado: ${fmt(record.weight)} kg</div>`:''}<div class="nutrition-record-macros"><span>Proteínas <strong>${fmt(record.protein)} g</strong></span><span>Carbohidratos <strong>${fmt(record.carbs)} g</strong></span><span>Grasas <strong>${fmt(record.fat)} g</strong></span></div>${record.note?`<p class="body-record-note">${esc(record.note)}</p>`:''}</article>`).join('')}</div>`:`<div class="empty"><h3>Aún no has definido un objetivo</h3><p>Crea tu primera meta de calorías y gramos diarios para registrar su evolución.</p></div>`}
+ ${records.length?`<div class="nutrition-records">${records.map(record=>`<article class="nutrition-record"><div class="nutrition-record-top"><div><span class="body-record-date">${esc(record.date)} · ${esc(nutritionGoalLabel(record.goal))}</span><h3>${fmt(record.calories)} <small>kcal al día</small></h3></div><div class="body-record-actions"><button data-action="edit-nutrition" data-id="${esc(record.id)}" aria-label="Editar objetivo del ${esc(record.date)}">${I('edit',18)}</button><button data-action="delete-nutrition" data-id="${esc(record.id)}" aria-label="Eliminar objetivo del ${esc(record.date)}">${I('trash',18)}</button></div></div>${record.weight?`<div class="nutrition-history-weight">Peso utilizado: ${fmt(record.weight)} kg · proteínas: ${fmt(record.proteinFactor??1.3)} g/kg · grasas: ${fmt(record.fatFactor??0.8)} g/kg</div>`:''}<div class="nutrition-record-macros"><span>Proteínas <strong>${fmt(record.protein)} g</strong></span><span>Carbohidratos <strong>${fmt(record.carbs)} g</strong></span><span>Grasas <strong>${fmt(record.fat)} g</strong></span></div>${record.note?`<p class="body-record-note">${esc(record.note)}</p>`:''}</article>`).join('')}</div>`:`<div class="empty"><h3>Aún no has definido un objetivo</h3><p>Crea tu primera meta de calorías y gramos diarios para registrar su evolución.</p></div>`}
  <p class="body-disclaimer">Estos son <strong>objetivos diarios planificados</strong>, no un diario de comidas ni calorías consumidas. Déficit, mantenimiento y ganancia son etiquetas; ForgeFit no determina automáticamente cuántas calorías necesitas. Si cambias tus objetivos, registra una nueva fecha para conservar el historial.</p></div>`;
 }
 function history(){if(state.progressTab==='cuerpo')return bodyProgress();if(state.progressTab==='nutricion')return nutritionProgress();const logs=state.logs||[];const completed=logs.length;const volume=logs.reduce((sum,log)=>sum+(log.exercises||[]).reduce((s,ex)=>s+(ex.sets||[]).reduce((v,x)=>v+Number(x.kg||0)*Number(x.reps||0),0),0),0);
@@ -315,13 +316,16 @@ function renderModal(){const m=state.modal;if(!m)return '';
   content=`<div class="modal-kicker">COMPOSICIÓN CORPORAL</div><h2>${row?'Editar':'Añadir'} medición</h2><p class="modal-sub">El peso es obligatorio. Completa solo los demás valores que realmente hayas medido.</p><form id="bodyForm" class="stack-form"><div class="body-base-inputs"><label>Fecha<input required name="date" type="date" value="${esc(row?.date||localISODate())}"/></label><label>Peso corporal (kg)<input required name="weight" type="number" min="10" max="600" step="0.01" inputmode="decimal" placeholder="Ej.: 73,5" value="${row?.weight??''}"/></label></div><div class="body-metric-fields">${metrics}</div><label>Notas (opcional)<textarea name="note" maxlength="300" rows="2" placeholder="Por ejemplo, báscula utilizada o momento del día">${esc(row?.note||'')}</textarea></label><p class="helper-note">Si introduces un porcentaje, calcularemos sus kg equivalentes usando el peso de esa fecha. Si introduces kg, calcularemos el porcentaje. No mezclaremos los valores sumándolos.</p><button class="btn btn-primary full" type="submit">${I('check',17)} ${row?'Actualizar':'Guardar'} medición</button></form>`;
  }else if(m.type==='nutrition'){
   const row=(state.data.nutritionRecords||[]).find(x=>x.id===m.id)||null;
-  const measurement=latestNutritionWeight();
-  const baseWeight=measurement?.weight??null;
-  const preview=calculateNutritionMacros(row?.calories??0,baseWeight);
-  content=`<div class="modal-kicker">OBJETIVO NUTRICIONAL</div><h2>${row?'Editar':'Crear'} objetivo diario</h2><p class="modal-sub">Solo eliges el objetivo y las calorías. Proteína: 1,3 g/kg, grasa: 0,8 g/kg y carbohidratos: las calorías restantes.</p>
+  const newest=nutritionRows()[0]||null;
+  const measurement=row?.weight?{weight:row.weight,date:row.weightDate||row.date}:latestNutritionWeight();
+  const selectedProteinFactor=row?.proteinFactor??newest?.proteinFactor??1.3;
+  const selectedFatFactor=row?.fatFactor??newest?.fatFactor??0.8;
+  content=`<div class="modal-kicker">OBJETIVO NUTRICIONAL</div><h2>${row?'Editar':'Crear'} objetivo diario</h2><p class="modal-sub">Indica tus calorías y ajusta proteínas y grasas en gramos por kilo de peso. Los carbohidratos se calculan automáticamente.</p>
   <form id="nutritionForm" class="stack-form"><div class="nutrition-form-top"><label>Fecha del objetivo<input type="date" required name="date" value="${esc(row?.date||localISODate())}"/></label><label>Modalidad<select name="goal">${NUTRITION_GOALS.map(([key,label])=>`<option value="${key}" ${row?.goal===key?'selected':''}>${esc(label)}</option>`).join('')}</select></label></div>
   <div class="nutrition-weight-source ${measurement?'':'nutrition-weight-missing'}">${measurement?`${I('check',18)} <span><strong>Peso registrado: ${fmt(measurement.weight)} kg</strong><small>Última medición: ${esc(measurement.date)}. Se guarda una copia de este peso con el objetivo.</small></span>`:`${I('info',18)} <span><strong>Aún no hay peso guardado.</strong><small>Primero añade tu peso en «Peso y cuerpo» para calcular los macros automáticamente.</small></span>`}</div>
   <label>Calorías que quieres comer al día (kcal)<input required name="calories" type="number" min="1" max="10000" step="1" inputmode="numeric" placeholder="Ej.: 2000" value="${row?.calories??''}"/></label>
+  <div class="nutrition-form-factors"><label>Proteína (g por kg)<input required name="proteinFactor" type="number" min="0" max="10" step="any" inputmode="decimal" value="${esc(selectedProteinFactor)}" aria-describedby="nutritionFactorsHelp"/></label><label>Grasa (g por kg)<input required name="fatFactor" type="number" min="0" max="10" step="any" inputmode="decimal" value="${esc(selectedFatFactor)}" aria-describedby="nutritionFactorsHelp"/></label></div>
+  <p id="nutritionFactorsHelp" class="helper-note">Puedes cambiar 1,3 o 0,8 por cualquier otro valor válido. El cálculo se actualizará en directo.</p>
   <div id="nutritionMath" class="nutrition-auto-preview" aria-live="polite">${measurement?`<p>Introduce las calorías para ver la distribución automática.</p>`:`<p>Necesitamos tu peso antes de calcular los macros.</p>`}</div>
   ${measurement?`<label>Notas (opcional)<textarea name="note" rows="2" maxlength="300" placeholder="Ej.: déficit durante cuatro semanas">${esc(row?.note||'')}</textarea></label><button type="submit" class="btn btn-primary full">${I('check',17)} ${row?'Actualizar objetivo':'Guardar objetivo'}</button>`:`<button type="button" class="btn btn-secondary full" data-action="add-body">${I('plus',17)} Registrar mi peso</button>`}</form>`;
  }else if(m.type==='log'){
@@ -530,14 +534,18 @@ root.addEventListener('submit',async e=>{
   if(!/^\d{4}-\d{2}-\d{2}$/.test(date)||Number.isNaN(Date.parse(date+'T12:00:00Z'))||!NUTRITION_GOALS.some(x=>x[0]===goal)){notify('Introduce una fecha y un objetivo válidos.');return;}
   const input=String(form.get('calories')||'').trim();
   if(!input||!/^\d+$/.test(input)){notify('Introduce un número entero de calorías.');return;}
-  const latest=latestNutritionWeight();
-  if(!latest){notify('Primero registra tu peso corporal en Peso y cuerpo.');return;}
-  const value=calculateNutritionMacros(Number(input),latest.weight);
-  if(!value.ok){notify(value.reason);updateNutritionMath();return;}
   const old=(state.data.nutritionRecords||[]).find(x=>x.id===state.modal?.id);
+  const latest=latestNutritionWeight();
+  if(!latest&&!old?.weight){notify('Primero registra tu peso corporal en Peso y cuerpo.');return;}
+  const weight=old?.weight??latest?.weight;
+  const proteinText=String(form.get('proteinFactor')??'').replace(',','.').trim();
+  const fatText=String(form.get('fatFactor')??'').replace(',','.').trim();
+  if(!proteinText||!fatText){notify('Indica los gramos por kilo de proteína y grasa.');return;}
+  const value=calculateNutritionMacros(Number(input),weight,Number(proteinText),Number(fatText));
+  if(!value.ok){notify(value.reason);updateNutritionMath();return;}
   const collision=(state.data.nutritionRecords||[]).find(x=>x.date===date&&x.id!==old?.id);
   if(collision&&!confirm('Ya hay un objetivo guardado para esa fecha. ¿Quieres reemplazarlo?'))return;
-  const record={id:old?.id||collision?.id||uid(),date,goal,...value,weightDate:latest.date,note:String(form.get('note')||'').trim().slice(0,300),createdAt:old?.createdAt||collision?.createdAt||stamp()};
+  const record={id:old?.id||collision?.id||uid(),date,goal,...value,weightDate:old?.weightDate??latest?.date,note:String(form.get('note')||'').trim().slice(0,300),createdAt:old?.createdAt||collision?.createdAt||stamp()};
   delete record.ok;
   state.data.nutritionRecords=[...(state.data.nutritionRecords||[]).filter(x=>x.id!==old?.id&&x.id!==collision?.id),record].slice(-500);
   state.modal=null;state.progressTab='nutricion';state.nutritionMetric='calories';state.page='historial';saveData();render();notify('Objetivo nutricional y macros guardados');return;
@@ -591,7 +599,7 @@ root.addEventListener('error',event=>{
  if(label)label.hidden=false;
 },{capture:true});
 root.addEventListener('input',e=>{
- if(e.target.closest?.('#nutritionForm')&&e.target.matches?.('[name=calories]'))updateNutritionMath();
+ if(e.target.closest?.('#nutritionForm')&&e.target.matches?.('[name=calories],[name=proteinFactor],[name=fatFactor]'))updateNutritionMath();
  if(e.target.id==='searchExercises'){
   state.search=e.target.value;state.visibleCatalog=36;
   const q=textMatch(state.search);
@@ -608,14 +616,17 @@ root.addEventListener('input',e=>{
 
 function updateNutritionMath(){
  const f=$('#nutritionForm'),out=$('#nutritionMath');if(!f||!out)return;
- const measurement=latestNutritionWeight();
+ const old=(state.data.nutritionRecords||[]).find(x=>x.id===state.modal?.id);
+ const measurement=old?.weight?{weight:old.weight,date:old.weightDate||old.date}:latestNutritionWeight();
  if(!measurement){out.innerHTML='<p>Registra tu peso en «Peso y cuerpo» para activar el cálculo.</p>';return;}
  const raw=f.elements.calories.value.trim();
  if(!raw){out.innerHTML='<p>Escribe las calorías para ver los gramos recomendados por tu fórmula.</p>';return;}
- const result=calculateNutritionMacros(Number(raw),measurement.weight);
+ const pText=f.elements.proteinFactor.value.trim(),fText=f.elements.fatFactor.value.trim();
+ if(!pText||!fText){out.textContent='Indica ambos factores para calcular los macronutrientes.';out.classList.add('warning');return;}
+ const result=calculateNutritionMacros(Number(raw),measurement.weight,Number(pText.replace(',','.')),Number(fText.replace(',','.')));
  if(!result.ok){out.textContent=result.reason;out.classList.add('warning');return;}
  out.classList.remove('warning');
- out.innerHTML=`<div class="nutrition-auto-grid"><div><small>Proteínas · 1,3 g/kg</small><strong>${fmt(result.protein)} g</strong><span>${fmt(result.protein*4)} kcal</span></div><div><small>Grasas · 0,8 g/kg</small><strong>${fmt(result.fat)} g</strong><span>${fmt(result.fat*9)} kcal</span></div><div><small>Carbohidratos · resto</small><strong>${fmt(result.carbs)} g</strong><span>${fmt(result.carbs*4)} kcal</span></div></div><p>Total aproximado: ${fmt(macroCalories(result))} de ${fmt(result.calories)} kcal. Calculado con ${fmt(result.weight)} kg.</p>`;
+ out.innerHTML=`<div class="nutrition-auto-grid"><div><small>Proteínas · ${fmt(result.proteinFactor)} g/kg</small><strong>${fmt(result.protein)} g</strong><span>${fmt(result.protein*4)} kcal</span></div><div><small>Grasas · ${fmt(result.fatFactor)} g/kg</small><strong>${fmt(result.fat)} g</strong><span>${fmt(result.fat*9)} kcal</span></div><div><small>Carbohidratos · resto</small><strong>${fmt(result.carbs)} g</strong><span>${fmt(result.carbs*4)} kcal</span></div></div><p>Total aproximado: ${fmt(macroCalories(result))} de ${fmt(result.calories)} kcal. Calculado con ${fmt(result.weight)} kg.</p>`;
 }
 function focusCalculatorResult(){
  requestAnimationFrame(()=>{

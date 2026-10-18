@@ -237,3 +237,9 @@
 .nutrition-used-weight,.nutrition-history-weight{font-size:12px;line-height:1.6;color:#a7cabe;margin:2px 0 15px}
 .nutrition-history-weight{margin:10px 0 0}
 @media(max-width:440px){.nutrition-auto-grid{grid-template-columns:1fr;gap:6px}.nutrition-auto-grid>div{flex-direction:row;justify-content:space-between;align-items:center;gap:7px;padding:10px}.nutrition-auto-grid small{flex:1}.nutrition-auto-grid strong{font-size:19px;margin:0}.nutrition-auto-grid span{display:none}}
+
+/* ForgeFit 3.4: factores editables en la ficha nutricional */
+.nutrition-form-factors{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.nutrition-form-factors label{min-width:0}
+.nutrition-form-factors input{width:100%;min-width:0;font-size:16px}
+@media(max-width:360px){.nutrition-form-factors{grid-template-columns:1fr}}
