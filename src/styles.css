@@ -61,3 +61,99 @@
 @media(max-width:1140px){.split-layout{grid-template-columns:1fr}}
 @media(max-width:620px){.split-overview{gap:7px}.split-overview>div{padding:12px 9px}.split-overview strong{font-size:17px}.split-overview span,.split-overview small{font-size:9px}.pulley-targets{grid-template-columns:1fr}.pulley-result .load-box strong{font-size:19px}.pulley-result .load-grid{gap:7px;padding:0 8px 8px}.stock-table th,.stock-table td{padding:10px 5px;font-size:12px}.stock-table input{width:62px}.stock-split-panel .settings-buttons{flex-wrap:wrap}}
 @media(max-width:350px){.split-overview{grid-template-columns:1fr}.pulley-result .load-grid{grid-template-columns:1fr}}
+
+/* ForgeFit 3: accessible mobile-first routines and exact-source GIF catalogue. */
+.mobile-day-navigation{display:none}
+.day-tab{min-width:0;transition:border-color .16s,background .16s}
+.day-tab .day-name{font-size:inherit}
+.routine-actions button:focus-visible,.day-tab:focus-visible,.mobile-day-navigation button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.source-id{font-size:12px;color:#a0b9bf;background:#162630;border:1px solid #2c424b;padding:11px 13px;border-radius:10px;margin:12px 0;overflow-wrap:anywhere}
+.source-id a{color:var(--accent);text-decoration:underline}
+.media-unavailable{color:#526371;font-size:11px;font-weight:750;text-align:center;padding:12px;line-height:1.4;display:grid;place-items:center;width:100%;height:100%}
+.media-unavailable[hidden]{display:none!important}
+.exercise-art.media-art img[hidden]{display:none!important}
+@media(max-width:620px){
+ .content{padding:19px 15px 130px}
+ .section-intro h2{font-size:clamp(26px,7vw,33px)}
+ .days-tabs{display:flex;overflow-x:auto;overscroll-behavior-inline:contain;scroll-snap-type:x mandatory;gap:10px;padding:3px 1px 13px;margin:0 -1px 5px;scrollbar-width:thin;scrollbar-color:#52786e transparent}
+ .day-tab{flex:0 0 110px;min-height:84px;scroll-snap-align:start;border-radius:14px;padding:13px 9px;font-size:15px;justify-content:center;gap:7px}
+ .day-tab .day-name{font-size:15px;white-space:nowrap}
+ .day-tab small{font-size:11px;white-space:nowrap}
+ .day-tab.active{box-shadow:inset 0 0 0 1px #87c8ad}
+ .mobile-day-navigation{display:flex;justify-content:space-between;align-items:center;gap:9px;margin:5px 0 22px;background:#17232b;border:1px solid #2a4244;border-radius:13px;padding:8px 9px}
+ .mobile-day-navigation strong{font-size:17px;color:#e5f7f1}
+ .mobile-day-navigation button{display:flex;align-items:center;justify-content:center;gap:5px;color:#a8e4d1;background:#25393b;border:1px solid #3a5b58;border-radius:9px;padding:10px 9px;font-size:12px;font-weight:800;min-height:44px}
+ .mobile-day-navigation button:first-child svg{transform:rotate(-90deg)}
+ .mobile-day-navigation button:last-child svg{transform:rotate(-90deg)}
+ .week-head{margin-bottom:13px;gap:10px;align-items:center}
+ .week-head h2{font-size:22px}
+ .routine-list{background:transparent;padding:0;border:0;display:grid;gap:12px}
+ .routine-card{display:grid;grid-template-columns:72px minmax(0,1fr);align-items:start;gap:10px 12px;background:#17222d;border:1px solid #33414b!important;border-radius:15px;padding:13px!important;min-width:0}
+ .routine-card .exercise-art.tiny{grid-column:1;width:72px;height:80px}
+ .routine-card .routine-info{grid-column:2;min-width:0}
+ .routine-card .routine-info h3{font-size:16px;line-height:1.3;margin-bottom:5px}
+ .routine-card .routine-info p{font-size:12px}
+ .routine-card .chips{gap:5px;flex-wrap:wrap;margin-top:9px}
+ .routine-card .chips span{font-size:11px;padding:5px 7px}
+ .routine-card .routine-actions{grid-column:1/-1;width:100%;display:flex;justify-content:flex-end;gap:9px;padding-top:10px;border-top:1px solid #2e4048}
+ .routine-card .routine-actions button{width:44px;height:44px;border-radius:10px;border:1px solid #354d53;background:#233640;color:#bde6da;display:grid;place-items:center}
+ .routine-card .routine-actions button:disabled{opacity:.3}
+ .routine-card .routine-actions button svg{width:19px;height:19px}
+ .add-dashed{min-height:58px;font-size:14px}
+ .pulley-targets label{font-size:14px}
+ .pulley-targets input{min-height:54px;font-size:26px}
+ .split-overview{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+ .split-overview>div:first-child{grid-column:1/-1;flex-direction:row;align-items:center;justify-content:space-between;gap:10px}
+ .split-overview>div{padding:14px 12px}
+ .split-overview span{font-size:12px}
+ .split-overview strong{font-size:22px}
+ .split-overview small{font-size:11px}
+ .pulley-result .load-grid{grid-template-columns:1fr;gap:10px}
+ .pulley-result .load-box{padding:13px}
+ .pulley-result .load-box strong{font-size:25px}
+ .pulley-result-title span{font-size:13px}
+}
+@media(max-width:365px){.mobile-day-navigation button{font-size:11px;padding:9px 7px}.routine-card{grid-template-columns:62px minmax(0,1fr)}.routine-card .exercise-art.tiny{width:62px;height:75px}.split-overview strong{font-size:19px}}
+
+/* ForgeFit 3.1: weight and body-composition progress, mobile-first. */
+.progress-switch{display:flex;gap:8px;margin:0 0 22px;padding:6px;background:#18252b;border:1px solid #33464c;border-radius:15px;max-width:540px}
+.progress-switch button{display:flex;align-items:center;justify-content:center;gap:9px;flex:1;min-height:46px;min-width:0;border:1px solid transparent;border-radius:10px;background:transparent;color:#aabdc6;font-weight:800;padding:10px 8px;white-space:normal}
+.progress-switch button.active{background:#28483f;border-color:#5b9e88;color:#adf5d9}
+.progress-switch button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.body-intro{margin-bottom:17px}.body-stats{margin-top:8px}.body-chart-panel{padding:23px;margin-bottom:26px}.body-chart-panel .panel-heading{align-items:flex-start}
+.body-chart-choice{display:flex;align-items:center;justify-content:space-between;gap:14px;font-size:13px;color:#c6d6db;font-weight:750;margin:16px 0}
+.body-chart-choice select{max-width:290px;width:58%;min-height:44px;color:#e3f8ef;background:#121e27;border:1px solid #44615f;border-radius:10px;padding:10px;font-size:14px}
+.body-line-chart{display:block;width:100%;height:auto;max-height:310px;background:#121f27;border:1px solid #263d43;border-radius:13px;padding:10px}
+.body-axis{font:12px 'DM Sans',sans-serif;fill:#9db7bd}
+.single-body-point{min-height:140px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:7px;background:#142630;border:1px solid #29454c;border-radius:12px}
+.single-body-point strong{font-size:28px;color:#a4f0d5}.single-body-point small{font-size:12px;color:#aabec3;text-align:center;padding:0 10px}
+.body-records{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin:15px 0}
+.body-record{padding:19px;background:#18232e;border:1px solid #31474c;border-radius:17px;min-width:0}
+.body-record-top{display:flex;justify-content:space-between;align-items:start;gap:10px;padding-bottom:13px;border-bottom:1px solid #35464a}
+.body-record-date{font-size:12px;color:#acbec4;font-weight:750}.body-record h3{font-size:31px;color:#e7f9f0;margin-top:6px}.body-record h3 small{font-size:13px;color:#b4c9c6}
+.body-record-actions{display:flex;gap:6px}.body-record-actions button{width:42px;height:42px;border-radius:11px;background:#24353c;border:1px solid #3b5656;color:#a9e8d5;display:grid;place-items:center}
+.body-record-values{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:11px 8px;padding-top:13px}.body-record-values div{min-width:0}.body-record-values small{display:block;color:#99afb6;font-size:11px;margin-bottom:4px}.body-record-values strong{font-size:13px;display:block;color:#e2f1ef;overflow-wrap:break-word}
+.body-record-note{color:#b1c7c7;font-size:12px;margin-top:13px;line-height:1.6}
+.body-disclaimer{margin:22px 0 35px;padding:14px 17px;border-left:3px solid #619f89;color:#a2b8bb;background:#14252c;border-radius:4px 12px 12px 4px;line-height:1.75;font-size:12px}
+.body-disclaimer strong{color:#d4ede2}
+.body-base-inputs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.body-metric-fields{display:grid;gap:10px;border:1px solid #355057;border-radius:12px;padding:14px;background:#111e27}
+.body-form-measure{display:grid;grid-template-columns:minmax(0,1fr) 94px;gap:10px;align-items:end}
+.body-form-measure label,.body-base-inputs label{min-width:0}
+.body-form-measure input,.body-form-measure select,.body-base-inputs input{min-width:0;width:100%}
+.body-unit-label{font-size:12px!important}
+.body-form-measure select{min-height:45px}
+@media(max-width:760px){.body-records{grid-template-columns:1fr}.body-chart-panel{padding:17px}.body-stats{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:620px){
+ .progress-switch{width:100%;margin-bottom:19px;padding:5px}.progress-switch button{min-height:52px;font-size:13px;gap:6px}
+ .body-intro .btn{min-height:52px;font-size:15px}
+ .body-stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-bottom:16px}
+ .body-stats .stat-card:first-child{grid-column:1/-1;min-height:106px}
+ .body-stats .stat-card:first-child strong{font-size:30px}.body-stats .stat-card strong{font-size:21px}
+ .body-chart-choice{display:block}.body-chart-choice select{width:100%;max-width:none;display:block;margin-top:9px}
+ .body-record{padding:16px}.body-record h3{font-size:30px}
+ .body-base-inputs{grid-template-columns:1fr}
+ .body-metric-fields{padding:10px}
+ .body-form-measure{grid-template-columns:minmax(0,1fr) 78px;gap:8px}
+ .body-form-measure select{padding:9px 4px}
+}
