@@ -19,7 +19,7 @@ const toNum=(v,min=0,max=9999)=>Math.max(min,Math.min(max,Math.round((Number(v)|
 const currentDay=()=>DAYS[(new Date().getDay()+6)%7];
 const today=()=>new Date().toLocaleDateString('es-ES',{weekday:'long',day:'numeric',month:'long'});
 const stamp=()=>new Date().toISOString();
-const defaultData=()=>({version:2,profile:{name:'Deportista',goal:'Ganar fuerza'},inventory:clone(DEFAULT_INVENTORY),routine:clone(STARTER_PLAN),customExercises:[],pulleyAllocation:clone(defaultAlloc),savedLoads:[],bodyRecords:[]});
+const defaultData=()=>({version:2,profile:{name:'Deportista',goal:'Ganar fuerza'},inventory:clone(DEFAULT_INVENTORY),routine:clone(STARTER_PLAN),customExercises:[],pulleyAllocation:clone(defaultAlloc),savedLoads:[],bodyRecords:[],nutritionRecords:[]});
 function normalize(data){
  const initial=defaultData();
  const d=(data && typeof data==='object')?data:{};
@@ -29,14 +29,15 @@ function normalize(data){
  return {...initial,...d,profile:{...initial.profile,...(d.profile||{})},inventory,
   routine:{...initial.routine,...(d.routine||{})},customExercises:Array.isArray(d.customExercises)?d.customExercises:[],
   pulleyAllocation:allocation,savedLoads:Array.isArray(d.savedLoads)?d.savedLoads.slice(0,60):[],
-  bodyRecords:Array.isArray(d.bodyRecords)?d.bodyRecords.filter(x=>x&&typeof x==='object'&&typeof x.id==='string').slice(0,400):[]};
+  bodyRecords:Array.isArray(d.bodyRecords)?d.bodyRecords.filter(x=>x&&typeof x==='object'&&typeof x.id==='string').slice(0,400):[],
+  nutritionRecords:Array.isArray(d.nutritionRecords)?d.nutritionRecords.filter(x=>x&&typeof x==='object'&&typeof x.id==='string').slice(0,500):[]};
 }
 function readDemo(){try{return normalize(JSON.parse(localStorage.getItem(localKey)||'null')?.data);}catch{return defaultData();}}
 function readLogs(){try{return JSON.parse(localStorage.getItem(localKey)||'null')?.logs||[];}catch{return [];}}
 const state={page:'inicio',day:currentDay(),muscle:'Todos',search:'',visibleCatalog:36,remoteExercises:[],remoteState:'loading',
  demo:!configured,user:null,authMode:'login',authBusy:false,
  data:readDemo(),logs:readLogs(),modal:null,toast:'',calcPole1:40,calcPole2:40,calcBusy:false,calcResult:null,
- training:false,draft:{},progressTab:'cuerpo',bodyMetric:'weight',loading:configured,cloudError:'',firebase:null,unsubs:[],saveTimer:null,savePending:false};
+ training:false,draft:{},progressTab:'cuerpo',bodyMetric:'weight',nutritionMetric:'calories',loading:configured,cloudError:'',firebase:null,unsubs:[],saveTimer:null,savePending:false};
 
 const paths={
  home:'<path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z"/>',
@@ -228,7 +229,7 @@ function bodyTrendSvg(rows,metric){
  const path=points.map((p,i)=>`${i?'L':'M'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
  return `<svg class="body-line-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Evolución de ${esc(BODY_METRICS.find(x=>x[0]===metric)?.[1]||'peso')} entre ${esc(data[0].date)} y ${esc(data.at(-1).date)}"><path d="M ${padX} ${height-bottom} H ${width-padX}" stroke="#51666c" stroke-width="1"/><path d="M ${padX} ${top} H ${width-padX}" stroke="#344b51" stroke-dasharray="4 6"/><text x="4" y="${top+5}" class="body-axis">${fmt(hi)}</text><text x="4" y="${height-bottom+4}" class="body-axis">${fmt(lo)}</text><path d="${path}" fill="none" stroke="#9defd5" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>${points.map(p=>`<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="4.5" fill="#9defd5"><title>${esc(p.date)}: ${fmt(p.value)} kg</title></circle>`).join('')}<text x="${padX}" y="${height-8}" class="body-axis">${esc(data[0].date.slice(5))}</text><text x="${width-padX}" y="${height-8}" class="body-axis" text-anchor="end">${esc(data.at(-1).date.slice(5))}</text></svg>`;
 }
-function progressSwitch(){return `<div class="progress-switch" role="group" aria-label="Sección de progreso"><button data-action="progress-tab" data-value="cuerpo" aria-pressed="${state.progressTab==='cuerpo'}" class="${state.progressTab==='cuerpo'?'active':''}">${I('target',17)} Peso y cuerpo</button><button data-action="progress-tab" data-value="entrenamientos" aria-pressed="${state.progressTab==='entrenamientos'}" class="${state.progressTab==='entrenamientos'?'active':''}">${I('chart',17)} Entrenamientos</button></div>`;}
+function progressSwitch(){return `<div class="progress-switch" role="group" aria-label="Sección de progreso"><button data-action="progress-tab" data-value="cuerpo" aria-pressed="${state.progressTab==='cuerpo'}" class="${state.progressTab==='cuerpo'?'active':''}">${I('target',17)} Peso y cuerpo</button><button data-action="progress-tab" data-value="entrenamientos" aria-pressed="${state.progressTab==='entrenamientos'}" class="${state.progressTab==='entrenamientos'?'active':''}">${I('chart',17)} Entrenamientos</button><button data-action="progress-tab" data-value="nutricion" aria-pressed="${state.progressTab==='nutricion'}" class="${state.progressTab==='nutricion'?'active':''}">${I('heart',17)} Nutrición</button></div>`;}
 function bodyProgress(){
  const rows=bodyRows(),latest=rows[0],first=rows.at(-1);
  const delta=rows.length>1?latest.weight-first.weight:0;
@@ -238,7 +239,48 @@ function bodyProgress(){
  <div class="section-head"><h2>Tus registros</h2></div>${rows.length?`<div class="body-records">${rows.map(record=>`<article class="body-record"><div class="body-record-top"><div><span class="body-record-date">${esc(record.date)}</span><h3>${fmt(record.weight)} <small>kg</small></h3></div><div class="body-record-actions"><button data-action="edit-body" data-id="${esc(record.id)}" aria-label="Editar medición del ${esc(record.date)}">${I('edit',18)}</button><button data-action="delete-body" data-id="${esc(record.id)}" aria-label="Borrar medición del ${esc(record.date)}">${I('trash',18)}</button></div></div><div class="body-record-values">${BODY_FIELDS.filter(([k])=>bodyValue(record,k)!=null).map(([k,label])=>`<div><small>${esc(label)}</small><strong>${bodyValueText(record,k)}</strong></div>`).join('')||'<span class="muted">Solo peso corporal</span>'}</div>${record.note?`<p class="body-record-note">${esc(record.note)}</p>`:''}</article>`).join('')}</div>`:`<div class="empty"><h3>Aún no hay mediciones</h3><p>Pulsa «Añadir medición» para registrar tu peso y, si los conoces, tus datos de composición corporal.</p></div>`}
  <p class="body-disclaimer">Los porcentajes y kilos se convierten mediante tu peso registrado, pero <strong>la app no estima grasa, músculo, agua, huesos ni órganos solo con el peso</strong>. Introduce datos que te haya proporcionado un dispositivo o profesional. Las mediciones de agua y músculo pueden solaparse, por lo que no se deben sumar todos estos componentes como si fueran partes independientes. Las básculas de bioimpedancia ofrecen estimaciones orientativas.</p></div>`;
 }
-function history(){if(state.progressTab==='cuerpo')return bodyProgress();const logs=state.logs||[];const completed=logs.length;const volume=logs.reduce((sum,log)=>sum+(log.exercises||[]).reduce((s,ex)=>s+(ex.sets||[]).reduce((v,x)=>v+Number(x.kg||0)*Number(x.reps||0),0),0),0);
+const NUTRITION_GOALS=[['deficit','Déficit · perder peso'],['mantenimiento','Mantenimiento'],['ganancia','Ganancia · subir peso / masa muscular']];
+const NUTRITION_METRICS=[['calories','Calorías','kcal'],['protein','Proteínas','g'],['carbs','Carbohidratos','g'],['fat','Grasas','g']];
+const nutritionRows=()=>[...(state.data.nutritionRecords||[])].filter(r=>r&&/^\d{4}-\d{2}-\d{2}$/.test(r.date)&&Number.isFinite(r.calories)).sort((a,b)=>b.date.localeCompare(a.date)||String(b.createdAt||'').localeCompare(String(a.createdAt||'')));
+const macroCalories=r=>4*r.protein+4*r.carbs+9*r.fat;
+// El peso proviene del registro más reciente de «Peso y cuerpo».
+function latestNutritionWeight(){return bodyRows()[0]||null;}
+function calculateNutritionMacros(calories,weight){
+ const c=Number(calories),w=Number(weight);
+ if(!Number.isFinite(c)||!Number.isInteger(c)||c<1||c>10000||!Number.isFinite(w)||w<10||w>600)return {ok:false,reason:'Indica calorías válidas y registra tu peso en Peso y cuerpo.'};
+ const protein=Math.round(1.3*w*10)/10;
+ const fat=Math.round(.8*w*10)/10;
+ const rest=c-4*protein-9*fat;
+ if(rest < -0.001)return {ok:false,reason:`Con ${fmt(w)} kg, proteínas y grasas ya necesitan ${fmt(4*protein+9*fat)} kcal. Introduce más calorías o revisa el objetivo.`};
+ const carbs=Math.max(0,Math.round(rest/4*10)/10);
+ return {ok:true,calories:c,weight:w,protein,fat,carbs};
+}
+const nutritionGoalLabel=g=>NUTRITION_GOALS.find(x=>x[0]===g)?.[1]||'Objetivo personalizado';
+function nutritionChart(records,metric){
+ const selected=NUTRITION_METRICS.find(x=>x[0]===metric)||NUTRITION_METRICS[0];
+ const points=records.slice(0,50).reverse().map(r=>({date:r.date,value:Number(r[metric])})).filter(r=>Number.isFinite(r.value));
+ if(points.length===0)return `<div class="empty mini">${I('chart',28)}<p>Registra un objetivo para empezar la gráfica.</p></div>`;
+ if(points.length===1)return `<div class="single-body-point"><strong>${fmt(points[0].value)} ${selected[2]}</strong><small>${esc(points[0].date)} · Añade otro registro para comparar.</small></div>`;
+ const width=620,height=208,left=53,right=23,top=25,bottom=38;
+ const values=points.map(p=>p.value),min=Math.min(...values),max=Math.max(...values),diff=Math.max(1,max-min),lo=Math.max(0,min-diff*.22),hi=max+diff*.22;
+ const pt=points.map((p,i)=>({...p,x:left+i*(width-left-right)/(points.length-1),y:top+(hi-p.value)*(height-top-bottom)/(hi-lo)}));
+ const line=pt.map((p,i)=>`${i?'L':'M'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+ return `<svg class="body-line-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Evolución del objetivo de ${esc(selected[1])} desde ${esc(points[0].date)} hasta ${esc(points.at(-1).date)}"><path d="M${left} ${height-bottom}H${width-right}" stroke="#51666c"/><path d="M${left} ${top}H${width-right}" stroke="#344b51" stroke-dasharray="4 6"/><text x="3" y="${top+6}" class="body-axis">${fmt(hi)}</text><text x="3" y="${height-bottom+4}" class="body-axis">${fmt(lo)}</text><path d="${line}" fill="none" stroke="#9defd5" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>${pt.map(p=>`<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="4.5" fill="#9defd5"><title>${esc(p.date)}: ${fmt(p.value)} ${selected[2]}</title></circle>`).join('')}<text x="${left}" y="${height-8}" class="body-axis">${esc(points[0].date.slice(5))}</text><text x="${width-right}" y="${height-8}" text-anchor="end" class="body-axis">${esc(points.at(-1).date.slice(5))}</text></svg>`;
+}
+function nutritionProgress(){
+ const records=nutritionRows(),latest=records[0],metric=NUTRITION_METRICS.find(x=>x[0]===state.nutritionMetric)||NUTRITION_METRICS[0];
+ return `${progressSwitch()}<div class="nutrition-progress">
+ <div class="section-intro body-intro"><div><p>TUS OBJETIVOS ALIMENTARIOS</p><h2>Nutrición y calorías.</h2><span>Introduce tus calorías diarias. Con tu último peso registrado calculamos automáticamente 1,3 g/kg de proteína, 0,8 g/kg de grasa y el resto en carbohidratos.</span></div><button class="btn btn-primary" data-action="add-nutrition">${I('plus',17)} ${latest?'Nuevo objetivo':'Crear objetivo'}</button></div>
+ ${latest?`<div class="nutrition-goal-tag">${I('target',17)} ${esc(nutritionGoalLabel(latest.goal))} <small>Actualizado el ${esc(latest.date)}</small></div>`:''}
+ <div class="nutrition-summary">${[['Calorías',latest?.calories,'kcal'],['Proteínas',latest?.protein,'g'],['Carbohidratos',latest?.carbs,'g'],['Grasas',latest?.fat,'g']].map(([label,val,unit])=>`<div class="nutrition-summary-card"><small>${label}</small><strong>${val===undefined?'—':fmt(val)} <em>${unit}</em></strong></div>`).join('')}</div>
+ ${latest?.weight?`<p class="nutrition-used-weight">Cálculo basado en ${fmt(latest.weight)} kg de peso corporal registrados al crear este objetivo.</p>`:''}
+ ${latest?`<div class="nutrition-macro-check ${Math.abs(macroCalories(latest)-latest.calories)>100?'warning':''}">${I('info',17)} Tus macros representan <strong>${fmt(macroCalories(latest))} kcal</strong> (proteína y carbohidratos × 4, grasa × 9). ${Math.abs(macroCalories(latest)-latest.calories)>100?'Hay una diferencia respecto a tus calorías objetivo; comprueba tus cantidades.':'Los valores están razonablemente alineados con el objetivo calórico.'}</div>`:''}
+ <section class="panel body-chart-panel"><div class="panel-heading"><div><h3>Evolución de tus objetivos</h3><p class="helper-note">Compara calorías o gramos de cada macronutriente entre fechas.</p></div>${I('chart',23)}</div><label class="body-chart-choice">Mostrar en la gráfica<select id="nutritionMetric">${NUTRITION_METRICS.map(([key,label,unit])=>`<option value="${key}" ${metric[0]===key?'selected':''}>${label} (${unit})</option>`).join('')}</select></label>${nutritionChart(records,metric[0])}</section>
+ <div class="section-head"><h2>Historial de objetivos</h2></div>
+ ${records.length?`<div class="nutrition-records">${records.map(record=>`<article class="nutrition-record"><div class="nutrition-record-top"><div><span class="body-record-date">${esc(record.date)} · ${esc(nutritionGoalLabel(record.goal))}</span><h3>${fmt(record.calories)} <small>kcal al día</small></h3></div><div class="body-record-actions"><button data-action="edit-nutrition" data-id="${esc(record.id)}" aria-label="Editar objetivo del ${esc(record.date)}">${I('edit',18)}</button><button data-action="delete-nutrition" data-id="${esc(record.id)}" aria-label="Eliminar objetivo del ${esc(record.date)}">${I('trash',18)}</button></div></div>${record.weight?`<div class="nutrition-history-weight">Peso utilizado: ${fmt(record.weight)} kg</div>`:''}<div class="nutrition-record-macros"><span>Proteínas <strong>${fmt(record.protein)} g</strong></span><span>Carbohidratos <strong>${fmt(record.carbs)} g</strong></span><span>Grasas <strong>${fmt(record.fat)} g</strong></span></div>${record.note?`<p class="body-record-note">${esc(record.note)}</p>`:''}</article>`).join('')}</div>`:`<div class="empty"><h3>Aún no has definido un objetivo</h3><p>Crea tu primera meta de calorías y gramos diarios para registrar su evolución.</p></div>`}
+ <p class="body-disclaimer">Estos son <strong>objetivos diarios planificados</strong>, no un diario de comidas ni calorías consumidas. Déficit, mantenimiento y ganancia son etiquetas; ForgeFit no determina automáticamente cuántas calorías necesitas. Si cambias tus objetivos, registra una nueva fecha para conservar el historial.</p></div>`;
+}
+function history(){if(state.progressTab==='cuerpo')return bodyProgress();if(state.progressTab==='nutricion')return nutritionProgress();const logs=state.logs||[];const completed=logs.length;const volume=logs.reduce((sum,log)=>sum+(log.exercises||[]).reduce((s,ex)=>s+(ex.sets||[]).reduce((v,x)=>v+Number(x.kg||0)*Number(x.reps||0),0),0),0);
  const last=logs.slice(0,8).reverse();const max=Math.max(1,...last.map(l=>l.exercises.reduce((sum,x)=>sum+x.sets.reduce((s,v)=>s+Number(v.kg||0)*Number(v.reps||0),0),0)));
  return `${progressSwitch()}<div class="section-intro"><div><p>LO QUE SE MIDE, MEJORA</p><h2>Tu progreso, en números.</h2><span>Consulta las sesiones terminadas y el volumen registrado.</span></div><button class="btn btn-secondary" data-action="export">${I('download',18)} Exportar</button></div>
  <div class="metrics metrics-two">${stat('Sesiones completadas',String(completed),'check','Historial guardado')}${stat('Volumen acumulado',`${fmt(volume)} kg`,'chart','Suma de peso × repeticiones')}</div>
@@ -271,6 +313,17 @@ function renderModal(){const m=state.modal;if(!m)return '';
    return `<div class="body-form-measure"><label for="body-${key}">${esc(label)}<input id="body-${key}" name="${key}" type="number" min="0" max="600" step="0.01" inputmode="decimal" placeholder="Opcional" value="${value===undefined?'':esc(value)}"/></label><label class="body-unit-label" for="unit-${key}">Unidad<select id="unit-${key}" name="unit-${key}"><option value="%" ${unit==='%'?'selected':''}>%</option><option value="kg" ${unit==='kg'?'selected':''}>kg</option></select></label></div>`;
   }).join('');
   content=`<div class="modal-kicker">COMPOSICIÓN CORPORAL</div><h2>${row?'Editar':'Añadir'} medición</h2><p class="modal-sub">El peso es obligatorio. Completa solo los demás valores que realmente hayas medido.</p><form id="bodyForm" class="stack-form"><div class="body-base-inputs"><label>Fecha<input required name="date" type="date" value="${esc(row?.date||localISODate())}"/></label><label>Peso corporal (kg)<input required name="weight" type="number" min="10" max="600" step="0.01" inputmode="decimal" placeholder="Ej.: 73,5" value="${row?.weight??''}"/></label></div><div class="body-metric-fields">${metrics}</div><label>Notas (opcional)<textarea name="note" maxlength="300" rows="2" placeholder="Por ejemplo, báscula utilizada o momento del día">${esc(row?.note||'')}</textarea></label><p class="helper-note">Si introduces un porcentaje, calcularemos sus kg equivalentes usando el peso de esa fecha. Si introduces kg, calcularemos el porcentaje. No mezclaremos los valores sumándolos.</p><button class="btn btn-primary full" type="submit">${I('check',17)} ${row?'Actualizar':'Guardar'} medición</button></form>`;
+ }else if(m.type==='nutrition'){
+  const row=(state.data.nutritionRecords||[]).find(x=>x.id===m.id)||null;
+  const measurement=latestNutritionWeight();
+  const baseWeight=measurement?.weight??null;
+  const preview=calculateNutritionMacros(row?.calories??0,baseWeight);
+  content=`<div class="modal-kicker">OBJETIVO NUTRICIONAL</div><h2>${row?'Editar':'Crear'} objetivo diario</h2><p class="modal-sub">Solo eliges el objetivo y las calorías. Proteína: 1,3 g/kg, grasa: 0,8 g/kg y carbohidratos: las calorías restantes.</p>
+  <form id="nutritionForm" class="stack-form"><div class="nutrition-form-top"><label>Fecha del objetivo<input type="date" required name="date" value="${esc(row?.date||localISODate())}"/></label><label>Modalidad<select name="goal">${NUTRITION_GOALS.map(([key,label])=>`<option value="${key}" ${row?.goal===key?'selected':''}>${esc(label)}</option>`).join('')}</select></label></div>
+  <div class="nutrition-weight-source ${measurement?'':'nutrition-weight-missing'}">${measurement?`${I('check',18)} <span><strong>Peso registrado: ${fmt(measurement.weight)} kg</strong><small>Última medición: ${esc(measurement.date)}. Se guarda una copia de este peso con el objetivo.</small></span>`:`${I('info',18)} <span><strong>Aún no hay peso guardado.</strong><small>Primero añade tu peso en «Peso y cuerpo» para calcular los macros automáticamente.</small></span>`}</div>
+  <label>Calorías que quieres comer al día (kcal)<input required name="calories" type="number" min="1" max="10000" step="1" inputmode="numeric" placeholder="Ej.: 2000" value="${row?.calories??''}"/></label>
+  <div id="nutritionMath" class="nutrition-auto-preview" aria-live="polite">${measurement?`<p>Introduce las calorías para ver la distribución automática.</p>`:`<p>Necesitamos tu peso antes de calcular los macros.</p>`}</div>
+  ${measurement?`<label>Notas (opcional)<textarea name="note" rows="2" maxlength="300" placeholder="Ej.: déficit durante cuatro semanas">${esc(row?.note||'')}</textarea></label><button type="submit" class="btn btn-primary full">${I('check',17)} ${row?'Actualizar objetivo':'Guardar objetivo'}</button>`:`<button type="button" class="btn btn-secondary full" data-action="add-body">${I('plus',17)} Registrar mi peso</button>`}</form>`;
  }else if(m.type==='log'){
   const log=state.logs.find(x=>x.id===m.id);if(log)content=`<div class="modal-kicker">SESIÓN GUARDADA</div><h2>${esc(log.day)}</h2><p class="modal-sub">${new Date(log.date).toLocaleString('es-ES')}</p>${log.exercises.map(x=>`<div class="log-ex"><strong>${esc(getEx(x.id).name)}</strong>${x.sets.map(s=>`<small>${fmt(s.reps)} repeticiones · ${kg(s.kg)}</small>`).join('')}</div>`).join('')}<button class="btn btn-secondary full" data-action="delete-log" data-id="${esc(log.id)}">${I('trash',17)} Eliminar sesión</button>`;
  }
@@ -287,14 +340,14 @@ function render(){
 async function recalc(){
  const a=Number(state.calcPole1),b=Number(state.calcPole2);
  if(!Number.isFinite(a)||!Number.isFinite(b)||a<0||b<0){
-  state.calcResult={ok:false,error:'Introduce cantidades válidas para las poleas.'};render();return;
+  state.calcResult={ok:false,error:'Introduce cantidades válidas para las poleas.'};render();focusCalculatorResult();return;
  }
- if(a===0&&b===0){state.calcResult={ok:false,error:'Introduce una carga mayor que cero al menos en una polea.'};render();return;}
+ if(a===0&&b===0){state.calcResult={ok:false,error:'Introduce una carga mayor que cero al menos en una polea.'};render();focusCalculatorResult();return;}
  state.calcBusy=true;state.calcResult=null;render();
  await new Promise(resolve=>setTimeout(resolve,25));
  try{state.calcResult=solveSeparated(pool(1),pool(2),a,b,0);}
  catch(e){state.calcResult={ok:false,error:'No se pudo completar el cálculo. Prueba una carga diferente.'};}
- state.calcBusy=false;render();
+ state.calcBusy=false;render();focusCalculatorResult();
 }
 function autoSplitPools(){
  const inv=state.data.inventory;
@@ -365,7 +418,10 @@ root.addEventListener('click',async e=>{
  if(act==='demo'){if(configured)return;state.demo=true;state.loading=false;state.cloudError='';state.data=readDemo();state.logs=readLogs();render();return;}
  if(act==='show-login'){state.demo=false;state.user=null;state.authMode='login';render();return;}
  if(act==='logout'&&state.firebase){clearTimeout(state.saveTimer);await state.firebase.authApi.signOut(state.firebase.auth);state.user=null;state.authMode='login';state.demo=false;state.page='inicio';render();return;}
- if(act==='progress-tab'){state.progressTab=node.dataset.value==='entrenamientos'?'entrenamientos':'cuerpo';render();return;}
+ if(act==='progress-tab'){state.progressTab=['entrenamientos','cuerpo','nutricion'].includes(node.dataset.value)?node.dataset.value:'cuerpo';render();return;}
+ if(act==='add-nutrition'){state.modal={type:'nutrition'};render();updateNutritionMath();return;}
+ if(act==='edit-nutrition'){state.modal={type:'nutrition',id:node.dataset.id};render();updateNutritionMath();return;}
+ if(act==='delete-nutrition'){const old=(state.data.nutritionRecords||[]).find(x=>x.id===node.dataset.id);if(!old||!confirm(`¿Borrar el objetivo del ${old.date}?`))return;state.data.nutritionRecords=state.data.nutritionRecords.filter(x=>x.id!==old.id);saveData();render();notify('Objetivo eliminado');return;}
  if(act==='add-body'){state.modal={type:'body'};render();return;}
  if(act==='edit-body'){state.modal={type:'body',id:node.dataset.id};render();return;}
  if(act==='delete-body'){
@@ -469,6 +525,23 @@ root.addEventListener('submit',async e=>{
   if(previous)Object.assign(previous,record);else state.data.bodyRecords=[record,...(state.data.bodyRecords||[])].slice(0,400);
   state.modal=null;state.progressTab='cuerpo';state.bodyMetric='weight';state.page='historial';saveData();render();notify('Medición guardada en tu cuenta');return;
  }
+ if(f.id==='nutritionForm'){
+  const date=String(form.get('date')||''),goal=String(form.get('goal')||'');
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(date)||Number.isNaN(Date.parse(date+'T12:00:00Z'))||!NUTRITION_GOALS.some(x=>x[0]===goal)){notify('Introduce una fecha y un objetivo válidos.');return;}
+  const input=String(form.get('calories')||'').trim();
+  if(!input||!/^\d+$/.test(input)){notify('Introduce un número entero de calorías.');return;}
+  const latest=latestNutritionWeight();
+  if(!latest){notify('Primero registra tu peso corporal en Peso y cuerpo.');return;}
+  const value=calculateNutritionMacros(Number(input),latest.weight);
+  if(!value.ok){notify(value.reason);updateNutritionMath();return;}
+  const old=(state.data.nutritionRecords||[]).find(x=>x.id===state.modal?.id);
+  const collision=(state.data.nutritionRecords||[]).find(x=>x.date===date&&x.id!==old?.id);
+  if(collision&&!confirm('Ya hay un objetivo guardado para esa fecha. ¿Quieres reemplazarlo?'))return;
+  const record={id:old?.id||collision?.id||uid(),date,goal,...value,weightDate:latest.date,note:String(form.get('note')||'').trim().slice(0,300),createdAt:old?.createdAt||collision?.createdAt||stamp()};
+  delete record.ok;
+  state.data.nutritionRecords=[...(state.data.nutritionRecords||[]).filter(x=>x.id!==old?.id&&x.id!==collision?.id),record].slice(-500);
+  state.modal=null;state.progressTab='nutricion';state.nutritionMetric='calories';state.page='historial';saveData();render();notify('Objetivo nutricional y macros guardados');return;
+ }
  if(f.id==='customForm'){
   const media=String(form.get('media')||'').trim();
   if(media&&!/^https:\/\//i.test(media)){notify('La URL de imagen debe comenzar por https://');return;}
@@ -486,6 +559,7 @@ root.addEventListener('change',e=>{
  if(node.matches('[data-split-weight]')){const item=state.data.inventory.find(p=>String(p.kg)===node.dataset.splitWeight);if(!item)return;state.data.pulleyAllocation[String(item.kg)]=toInt(node.value,0,item.count);invalidateCalc();saveData();render();}
  if(node.matches('[data-draft]')){const i=Number(node.dataset.exindex),j=Number(node.dataset.setindex),key=node.dataset.draft;if(state.draft[i]?.[j])state.draft[i][j][key]=key==='kg'?toNum(node.value):toInt(node.value);}
  if(node.id==='bodyMetric'){state.bodyMetric=BODY_METRICS.some(x=>x[0]===node.value)?node.value:'weight';render();return;}
+ if(node.id==='nutritionMetric'){state.nutritionMetric=NUTRITION_METRICS.some(x=>x[0]===node.value)?node.value:'calories';render();return;}
  if(node.id==='backupFile'){
   const file=node.files?.[0];if(!file)return;
   file.text().then(async text=>{
@@ -517,6 +591,7 @@ root.addEventListener('error',event=>{
  if(label)label.hidden=false;
 },{capture:true});
 root.addEventListener('input',e=>{
+ if(e.target.closest?.('#nutritionForm')&&e.target.matches?.('[name=calories]'))updateNutritionMath();
  if(e.target.id==='searchExercises'){
   state.search=e.target.value;state.visibleCatalog=36;
   const q=textMatch(state.search);
@@ -531,6 +606,24 @@ root.addEventListener('input',e=>{
  }
 });
 
+function updateNutritionMath(){
+ const f=$('#nutritionForm'),out=$('#nutritionMath');if(!f||!out)return;
+ const measurement=latestNutritionWeight();
+ if(!measurement){out.innerHTML='<p>Registra tu peso en «Peso y cuerpo» para activar el cálculo.</p>';return;}
+ const raw=f.elements.calories.value.trim();
+ if(!raw){out.innerHTML='<p>Escribe las calorías para ver los gramos recomendados por tu fórmula.</p>';return;}
+ const result=calculateNutritionMacros(Number(raw),measurement.weight);
+ if(!result.ok){out.textContent=result.reason;out.classList.add('warning');return;}
+ out.classList.remove('warning');
+ out.innerHTML=`<div class="nutrition-auto-grid"><div><small>Proteínas · 1,3 g/kg</small><strong>${fmt(result.protein)} g</strong><span>${fmt(result.protein*4)} kcal</span></div><div><small>Grasas · 0,8 g/kg</small><strong>${fmt(result.fat)} g</strong><span>${fmt(result.fat*9)} kcal</span></div><div><small>Carbohidratos · resto</small><strong>${fmt(result.carbs)} g</strong><span>${fmt(result.carbs*4)} kcal</span></div></div><p>Total aproximado: ${fmt(macroCalories(result))} de ${fmt(result.calories)} kcal. Calculado con ${fmt(result.weight)} kg.</p>`;
+}
+function focusCalculatorResult(){
+ requestAnimationFrame(()=>{
+  const el=$('.calc-output');if(!el)return;
+  const reduced=window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  el.scrollIntoView({behavior:reduced?'auto':'smooth',block:'start'});
+ });
+}
 if('serviceWorker' in navigator && location.protocol==='https:')navigator.serviceWorker.register('./sw.js').catch(()=>{});
 if(configured)startFirebase();else{state.loading=false;render();}
 loadRemoteExercises();
