@@ -3,7 +3,8 @@
 const make = (id, name, muscle, equipment, type, tip) => ({ id, name, muscle, equipment, type, tip, media: '' });
 export const EXERCISES = [
  make('press-banca','Press de banca','Pecho','Barra','push','Mantén los hombros estables y controla la bajada.'),
- make('press-inclinado','Press inclinado','Pecho','Mancuernas','push','Banco ligeramente inclinado y recorrido controlado.'),
+ make('press-banca-inclinado-barra','Press de banca inclinado con barra','Pecho','Barra','push','Coloca el banco inclinado y baja la barra con control.'),
+ make('press-inclinado','Press de banca inclinado con mancuernas','Pecho','Mancuernas','push','Banco ligeramente inclinado y recorrido controlado.'),
  make('aperturas','Aperturas con mancuernas','Pecho','Mancuernas','push','Flexiona ligeramente los codos durante el movimiento.'),
  make('cruce-poleas','Cruce de poleas','Pecho','Polea','cable','Mantén una posición estable y acerca las manos al frente.'),
  make('press-pecho-polea','Press de pecho en polea','Pecho','Polea','cable','Empuja en línea con el pecho sin arquear la espalda.'),

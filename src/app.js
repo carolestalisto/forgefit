@@ -1,10 +1,13 @@
 import {EXERCISES, MUSCLES, DAYS, DEFAULT_INVENTORY, STARTER_PLAN} from './catalog.js';
-import {solveLoad, inventoryTotal} from './solver.js';
+import {inventoryTotal} from './solver.js';
+import {solveSeparated} from './pulley-solver.js';
+import {fetchExerciseCatalog, EXERCISE_DB_SOURCE} from './exercise-db.js';
 import {firebaseConfig} from '../firebase-config.js';
 
 const $=selector=>document.querySelector(selector);
 const root=$('#root');
 const localKey='forgefit-local-v1';
+const defaultAlloc=Object.fromEntries([[10,3],[5,4],[3,1],[2.5,3],[2,8],[1.5,2],[1.25,2],[1,12],[0.5,1]].map(([w,n])=>[String(w),n]));
 const configured=Boolean(firebaseConfig.apiKey && firebaseConfig.projectId && firebaseConfig.appId);
 const clone=value=>JSON.parse(JSON.stringify(value));
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -16,17 +19,22 @@ const toNum=(v,min=0,max=9999)=>Math.max(min,Math.min(max,Math.round((Number(v)|
 const currentDay=()=>DAYS[(new Date().getDay()+6)%7];
 const today=()=>new Date().toLocaleDateString('es-ES',{weekday:'long',day:'numeric',month:'long'});
 const stamp=()=>new Date().toISOString();
-const defaultData=()=>({version:1,profile:{name:'Deportista',goal:'Ganar fuerza'},inventory:clone(DEFAULT_INVENTORY),routine:clone(STARTER_PLAN),customExercises:[]});
+const defaultData=()=>({version:2,profile:{name:'Deportista',goal:'Ganar fuerza'},inventory:clone(DEFAULT_INVENTORY),routine:clone(STARTER_PLAN),customExercises:[],pulleyAllocation:clone(defaultAlloc),savedLoads:[]});
 function normalize(data){
  const initial=defaultData();
  const d=(data && typeof data==='object')?data:{};
- return {...initial,...d,profile:{...initial.profile,...(d.profile||{})},inventory:Array.isArray(d.inventory)?d.inventory:initial.inventory,
-  routine:{...initial.routine,...(d.routine||{})},customExercises:Array.isArray(d.customExercises)?d.customExercises:[]};
+ const inventory=Array.isArray(d.inventory)?d.inventory:initial.inventory;
+ const allocation={...initial.pulleyAllocation,...(d.pulleyAllocation||{})};
+ for(const p of inventory) allocation[String(p.kg)]=toInt(allocation[String(p.kg)]??Math.floor(p.count/2),0,p.count);
+ return {...initial,...d,profile:{...initial.profile,...(d.profile||{})},inventory,
+  routine:{...initial.routine,...(d.routine||{})},customExercises:Array.isArray(d.customExercises)?d.customExercises:[],
+  pulleyAllocation:allocation,savedLoads:Array.isArray(d.savedLoads)?d.savedLoads.slice(0,60):[]};
 }
 function readDemo(){try{return normalize(JSON.parse(localStorage.getItem(localKey)||'null')?.data);}catch{return defaultData();}}
 function readLogs(){try{return JSON.parse(localStorage.getItem(localKey)||'null')?.logs||[];}catch{return [];}}
-const state={page:'inicio',day:currentDay(),muscle:'Todos',search:'',demo:!configured,user:null,authMode:'login',authBusy:false,
- data:readDemo(),logs:readLogs(),modal:null,toast:'',calcBars:4,calcTotal:188.5,calcApprox:true,calcResult:null,
+const state={page:'inicio',day:currentDay(),muscle:'Todos',search:'',visibleCatalog:36,remoteExercises:[],remoteState:'loading',
+ demo:!configured,user:null,authMode:'login',authBusy:false,
+ data:readDemo(),logs:readLogs(),modal:null,toast:'',calcPole1:40,calcPole2:40,calcMaxDiscs:'',calcBusy:false,calcResult:null,
  training:false,draft:{},loading:configured,cloudError:'',firebase:null,unsubs:[],saveTimer:null,savePending:false};
 
 const paths={
@@ -61,8 +69,39 @@ const paths={
 };
 const I=(name,size=19)=>`<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name]||paths.spark}</svg>`;
 const nav=[['inicio','home','Inicio'],['rutina','calendar','Mi rutina'],['ejercicios','dumbbell','Ejercicios'],['calculadora','calculator','Calculadora'],['historial','chart','Progreso'],['ajustes','settings','Ajustes']];
-function getCatalog(){return [...EXERCISES,...state.data.customExercises];}
-function getEx(id){return getCatalog().find(x=>x.id===id)||{id,name:'Ejercicio eliminado',muscle:'Otros',equipment:'Otro',type:'pull',tip:''};}
+function getCatalog(){return [...EXERCISES,...state.remoteExercises,...state.data.customExercises];}
+function textMatch(v){return String(v??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();}
+function pool(pole){return state.data.inventory.map(p=>{const n=toInt(state.data.pulleyAllocation[String(p.kg)]??Math.floor(p.count/2),0,p.count);return {kg:p.kg,count:pole===1?n:p.count-n};});}
+function poolTotal(pole){return inventoryTotal(pool(pole));}
+function stockCount(pole){return pool(pole).reduce((n,p)=>n+p.count,0);}
+function invalidateCalc(){state.calcResult=null;}
+function connectCuratedGifs(){
+ const stop=new Set(['de','del','la','las','los','el','en','con','para','por','a','al','y','un','una']);
+ const words=s=>textMatch(s).split(/[^a-z0-9]+/g).filter(w=>w.length>2&&!stop.has(w));
+ for(const base of EXERCISES){
+  if(base.media)continue;
+  const tokens=words(base.name);if(tokens.length<2)continue;
+  let best=null,score=0;
+  for(const entry of state.remoteExercises){
+   if(entry.muscle!==base.muscle||entry.equipment!==base.equipment||!entry.media)continue;
+   const t=words(entry.name);if(!t.length)continue;
+   const shared=tokens.filter(w=>t.includes(w)).length;
+   const sim=shared/Math.max(tokens.length,t.length);
+   if(sim>score){score=sim;best=entry;}
+  }
+  if(best&&score>=.74)base.media=best.media;
+ }
+}
+async function loadRemoteExercises(){
+ try{state.remoteExercises=await fetchExerciseCatalog();state.remoteState='ready';connectCuratedGifs();}
+ catch(e){state.remoteState='unavailable';}
+ if(state.page==='ejercicios' && !state.modal)render();
+}
+function getEx(id){
+ const found=getCatalog().find(x=>x.id===id);if(found)return found;
+ const fallback=Object.values(state.data.routine||{}).flat().find(x=>x?.id===id&&x.snapshot)?.snapshot;
+ return fallback?{id,...fallback}: {id,name:'Ejercicio no disponible sin conexión',muscle:'Otros',equipment:'Otro',type:'pull',tip:''};
+}
 function getList(day=state.day){return Array.isArray(state.data.routine[day])?state.data.routine[day]:[];}
 function notify(message){const node=$('#toast');node.textContent=message;node.classList.add('show');clearTimeout(notify.timer);notify.timer=setTimeout(()=>node.classList.remove('show'),3500);}
 function saveData(){
@@ -104,7 +143,7 @@ function routineCard(item,index,day=state.day,editable=true){
  return `<article class="routine-card"><div class="routine-pos">${index+1}</div>${art(ex,'tiny')}<div class="routine-info"><h3>${esc(ex.name)}</h3><p>${esc(ex.muscle)} <span>·</span> ${esc(ex.equipment)}</p><div class="chips"><span>${toInt(item.sets,1,20)} series</span><span>${toInt(item.reps,1,999)} reps</span><span>${fmt(item.kg)} kg</span>${isCable?'<span class="chip-accent">Polea</span>':''}</div></div>${editable?`<div class="routine-actions"><button title="Editar" data-action="edit-routine" data-day="${esc(day)}" data-index="${index}">${I('edit',17)}</button><button title="Subir" ${index===0?'disabled':''} data-action="move" data-dir="-1" data-day="${esc(day)}" data-index="${index}">${I('up',17)}</button><button title="Bajar" ${index===getList(day).length-1?'disabled':''} data-action="move" data-dir="1" data-day="${esc(day)}" data-index="${index}">${I('down',17)}</button><button title="Eliminar" data-action="delete-routine" data-day="${esc(day)}" data-index="${index}">${I('trash',17)}</button></div>`:`<button class="subtle-btn" data-action="detail" data-id="${esc(ex.id)}">Ver ${I('chevron',15)}</button>`}</article>`;
 }
 function art(ex,size='normal'){
- if(ex.media && /^https:\/\//i.test(ex.media))return `<div class="exercise-art ${size}"><img loading="lazy" src="${esc(ex.media)}" alt="Demostración de ${esc(ex.name)}" referrerpolicy="no-referrer"/></div>`;
+ if(ex.media && /^https:\/\//i.test(ex.media))return `<div class="exercise-art ${size} media-art"><img loading="lazy" decoding="async" src="${esc(ex.media)}" alt="Demostración de ${esc(ex.name)}" referrerpolicy="no-referrer"/></div>`;
  const hash=[...ex.name].reduce((s,c)=>s+c.charCodeAt(0),0);
  const accents=['#7fcab4','#d5b7ff','#ffba92','#85adf8','#f1cf93'];
  const accent=accents[hash%accents.length];
@@ -125,20 +164,49 @@ function weekView(){return `<div class="section-intro"><div><p>PERSONALIZA TU PR
  <div class="routine-list">${getList().length?getList().map((item,i)=>routineCard(item,i)).join(''):`<div class="empty">${I('calendar',36)}<h3>Hoy no hay ejercicios</h3><p>Añade un ejercicio para empezar a construir tu rutina.</p><button class="btn btn-primary" data-action="add" data-day="${esc(state.day)}">${I('plus',16)} Añadir ejercicio</button></div>`}</div>
  ${getList().length?`<button class="add-dashed" data-action="add" data-day="${esc(state.day)}">${I('plus',19)} Añadir otro ejercicio</button>`:''}`;}
 function catalogCards(arr){return arr.map(ex=>`<article class="exercise-card">${art(ex)}<div class="exercise-card-body"><div class="exercise-topline">${esc(ex.muscle)} <span>·</span> ${esc(ex.equipment)}</div><h3>${esc(ex.name)}</h3><div class="exercise-card-actions"><button class="small-link" data-action="detail" data-id="${esc(ex.id)}">Ver detalles ${I('chevron',14)}</button><button class="circle-add" data-action="add-one" data-id="${esc(ex.id)}" title="Añadir a ${esc(state.day)}">${I('plus',17)}</button></div></div></article>`).join('');}
-function library(){const q=state.search.toLowerCase().trim();const options=getCatalog().filter(ex=>(state.muscle==='Todos'||ex.muscle===state.muscle)&&(!q||(ex.name+' '+ex.muscle+' '+ex.equipment).toLowerCase().includes(q)));
- return `<div class="section-intro"><div><p>DESCUBRE TU PRÓXIMO MOVIMIENTO</p><h2>Biblioteca de ejercicios.</h2><span>${getCatalog().length} movimientos para construir tu rutina.</span></div><button class="btn btn-secondary" data-action="custom">${I('plus',18)} Ejercicio propio</button></div>
- <div class="catalog-tools"><label class="search-box">${I('search',19)}<input id="searchExercises" data-search="1" type="search" autocomplete="off" placeholder="Buscar ejercicio, músculo..." value="${esc(state.search)}" /></label><div class="filter-scroll">${MUSCLES.map(m=>`<button class="filter-pill ${state.muscle===m?'active':''}" data-muscle="${esc(m)}">${esc(m)}</button>`).join('')}</div></div>
- <div class="catalog-count">${options.length} ejercicios encontrados</div><div id="catalogGrid" class="exercise-grid">${options.length?catalogCards(options):'<div class="empty"><h3>No hay coincidencias</h3><p>Prueba con otro nombre o músculo.</p></div>'}</div>
- <p class="helper-note">${I('info',16)} Las ilustraciones incluidas son originales y orientativas. Puedes añadir tus propios GIFs o imágenes con licencia desde «Ejercicio propio».</p>`;}
+function library(){
+ const q=textMatch(state.search);
+ const options=getCatalog().filter(ex=>(state.muscle==='Todos'||ex.muscle===state.muscle)&&(!q||textMatch(ex.name+' '+ex.muscle+' '+ex.equipment).includes(q)));
+ const shown=options.slice(0,state.visibleCatalog);
+ return `<div class="section-intro"><div><p>ENCUENTRA TU SIGUIENTE EJERCICIO</p><h2>Biblioteca con animaciones.</h2><span>${getCatalog().length} ejercicios disponibles para tus rutinas.</span></div><button class="btn btn-primary" data-action="custom">${I('plus',18)} Crear mi ejercicio</button></div>
+ <div class="catalog-tools"><label class="search-box">${I('search',19)}<input id="searchExercises" data-search="1" type="search" autocomplete="off" placeholder="Busca por nombre, músculo o material..." value="${esc(state.search)}" /></label><div class="filter-scroll">${MUSCLES.map(m=>`<button class="filter-pill ${state.muscle===m?'active':''}" data-muscle="${esc(m)}">${esc(m)}</button>`).join('')}</div></div>
+ <div class="catalog-count">${options.length} ejercicios encontrados ${state.remoteState==='loading'?'· Cargando GIFs del catálogo externo…':state.remoteState==='unavailable'?'· Catálogo externo no disponible, mostrando los ejercicios locales.':''}</div>
+ <div id="catalogGrid" class="exercise-grid">${shown.length?catalogCards(shown):'<div class="empty"><h3>No hay coincidencias</h3><p>Prueba con otro nombre o crea tu propio ejercicio.</p></div>'}</div>
+ <div id="catalogMore">${options.length>shown.length?`<button class="btn btn-secondary catalog-more" data-action="more-catalog">${I('plus',17)} Mostrar más (${options.length-shown.length} restantes)</button>`:''}</div>
+ <p class="helper-note">${I('info',16)} Los GIFs se cargan desde <a href="${EXERCISE_DB_SOURCE}" target="_blank" rel="noopener noreferrer">ExerciseGymGifsDB</a>. Necesitas conexión para verlos. Los ejercicios personalizados se guardan en tu cuenta.</p>`;
+}
 function cableDiagram(bars){const positions=bars===4?[88,264]:[176];return `<svg class="machine-diagram" viewBox="0 0 352 190" role="img" aria-label="Máquina con ${bars===4?'dos poleas y cuatro barras':'una polea y dos barras'}"><defs><linearGradient id="steel" x1="0" x2="1"><stop stop-color="#78919b"/><stop offset=".5" stop-color="#c6d3d9"/><stop offset="1" stop-color="#61747d"/></linearGradient></defs>${positions.map((cx,index)=>`<g><rect x="${cx-49}" y="19" width="98" height="144" rx="9" fill="#192a32" stroke="#5c7780" stroke-opacity=".65" stroke-width="2"/><path d="M${cx} 19V162" stroke="url(#steel)" stroke-width="7"/><circle cx="${cx}" cy="37" r="11" fill="#718d95" stroke="#bbced1"/><path d="M${cx-70} 111H${cx+70}" stroke="url(#steel)" stroke-width="9" stroke-linecap="round"/>${[-1,1].map(d=>`<rect x="${cx+d*56-5}" y="90" width="10" height="44" rx="2" fill="#8de0c6"/><rect x="${cx+d*41-5}" y="96" width="10" height="32" rx="2" fill="#4f998c"/>`).join('')}<text x="${cx}" y="182" fill="#acbec3" font-size="12" text-anchor="middle">POLEA ${index+1}</text></g>`).join('')}</svg>`;}
-function calcResultMarkup(){const r=state.calcResult;if(!r)return `<div class="calc-placeholder">${I('target',34)}<h3>Tu reparto aparecerá aquí</h3><p>Indica la carga total y pulsa calcular. Se comprobará que tengas suficientes discos.</p></div>`;
- if(!r.ok)return `<div class="calc-placeholder calc-error">${I('info',31)}<h3>No hay una combinación exacta</h3><p>${esc(r.error)}</p></div>`;
- return `<div class="result-head"><div><span class="eyebrow">REPARTO CALCULADO</span><h3>${kg(r.perSide)} <small>por barra</small></h3><p>${kg(r.actualTotal)} repartidos · ${r.loads.length===4?'2 poleas':'1 polea'}</p></div><span class="success-tag">${I('check',16)} Equilibrado</span></div><div class="load-grid">${r.loads.map((items,i)=>`<div class="load-box"><span class="load-index">${r.loads.length===4?`Polea ${Math.floor(i/2)+1} · ${i%2?'Dcha.':'Izda.'}`:`${i?'Barra derecha':'Barra izquierda'}`}</span><strong>${kg(r.perSide)}</strong><div class="load-plates">${items.map(x=>`<span>${x.count} × ${fmt(x.kg)} kg</span>`).join('')}</div><small>${r.plateCounts[i]} discos</small></div>`).join('')}</div>${r.unallocated>0?`<div class="notice">${I('info',18)} Discos sin usar: ${kg(r.unallocated)}. Eso es normal cuando no se puede dividir todo exactamente.</div>`:''}<div class="notice success">${I('check',18)} Cada barra tiene la misma carga. Comprueba también el límite permitido por tu máquina y usa cierres de seguridad.</div>`;}
-function calculator(){let r=state.calcResult;return `<div class="section-intro"><div><p>PRECISIÓN EN CADA REPETICIÓN</p><h2>Todos los lados. Igual peso.</h2><span>Calcula cómo repartir tus discos sin sobrepasar el inventario.</span></div><button class="btn btn-secondary" data-nav="ajustes">${I('settings',17)} Mis discos</button></div>
- <div class="calc-grid"><div class="panel calc-controls"><div class="panel-heading"><h3>Configura la carga</h3><span class="mini-icon">${I('calculator')}</span></div><label class="form-label">¿Cuántas poleas vas a cargar?</label><div class="segmented"><button data-action="bars" data-value="4" class="${state.calcBars===4?'active':''}">2 poleas <small>4 barras</small></button><button data-action="bars" data-value="2" class="${state.calcBars===2?'active':''}">1 polea <small>2 barras</small></button></div>
- <div class="diagram-wrap">${cableDiagram(state.calcBars)}</div><label for="calcTotal" class="form-label">Peso TOTAL de discos a repartir (kg)</label><div class="weight-input"><input id="calcTotal" type="number" min="0.25" step="0.25" value="${esc(state.calcTotal)}" inputmode="decimal"/><span>kg</span></div><div class="quick-weights">${[20,40,60,80,120,188.5].map(x=>`<button data-action="preset" data-value="${x}" class="${state.calcTotal===x?'selected':''}">${fmt(x)} kg</button>`).join('')}</div>
- <label class="toggle-row"><input id="calcApprox" type="checkbox" ${state.calcApprox?'checked':''}/><span><strong>Ajustar al reparto viable</strong><small>Si sobra peso, buscar el máximo que se pueda igualar.</small></span></label><button class="btn btn-primary full" data-action="calculate">${I('bolt',18)} Calcular reparto</button><p class="helper-note">Tienes ${kg(inventoryTotal(state.data.inventory))} en discos. En modo dos poleas se divide entre 4 barras, no se carga todo en una sola.</p></div>
- <div class="panel calc-output"><div class="panel-heading"><h3>Resultado de las barras</h3><span class="mini-icon">${I('target')}</span></div>${calcResultMarkup()}</div></div><div class="disclaimer">${I('info',17)} El cálculo iguala la masa de discos por barra. La resistencia que sientes al tirar del cable puede ser diferente según la relación de poleas de la máquina. La calculadora no verifica la capacidad de carga máxima ni la longitud física de las barras.</div>`;}
+function calcResultMarkup(){
+ const r=state.calcResult;
+ if(state.calcBusy)return `<div class="calc-placeholder">${I('clock',31)}<h3>Buscando una distribución…</h3><p>Comprobando los discos de cada soporte por separado.</p></div>`;
+ if(!r)return `<div class="calc-placeholder">${I('target',34)}<h3>Prepara las dos poleas</h3><p>Indica la carga total de cada polea y pulsa calcular. Ninguna utilizará los discos de la otra.</p></div>`;
+ if(!r.ok)return `<div class="calc-placeholder calc-error">${I('info',31)}<h3>No se puede equilibrar</h3><p>${esc(r.error)}</p></div>`;
+ return `<div class="result-head"><div><span class="eyebrow">REPARTO EXACTO · INVENTARIOS SEPARADOS</span><h3>${kg(r.actualTotal)} <small>en total</small></h3><p>Polea 1: ${kg(r.totals[0])} · Polea 2: ${kg(r.totals[1])}</p></div><span class="success-tag">${I('check',16)} Equilibrado</span></div>
+ <div class="pulley-results">${[0,1].map(p=>`<section class="pulley-result"><div class="pulley-result-title"><strong>Polea ${p+1}</strong><span>${kg(r.totals[p])} total · ${kg(r.totals[p]/2)} por lado</span></div>
+ <div class="load-grid">${[0,1].map(b=>{const side=r.loads[p*2+b];return `<div class="load-box"><span class="load-index">${b===0?'⬅ Barra izquierda':'Barra derecha ➡'}</span><strong>${kg(r.totals[p]/2)}</strong><div class="load-plates">${side.length?side.map(x=>`<span>${x.count} × ${fmt(x.kg)} kg</span>`).join(''):'<span>Sin discos</span>'}</div><small>${r.plateCounts[p*2+b]} discos</small></div>`;}).join('')}</div>
+ <div class="remaining-pool">En el soporte de la polea ${p+1} sobran ${kg(inventoryTotal(r.leftovers[p]))}${r.leftovers[p].length?`: ${r.leftovers[p].map(x=>`${x.count} × ${fmt(x.kg)} kg`).join(', ')}`:''}</div></section>`).join('')}</div>
+ <div class="calc-actions"><button class="btn btn-secondary" data-action="save-load">${I('heart',17)} Guardar esta combinación</button></div>
+ <div class="notice success">${I('check',18)} Cada polea usa solamente sus discos reservados. Izquierda y derecha tienen exactamente el mismo peso dentro de cada polea.</div>`;
+}
+function calculator(){
+ const inv=state.data.inventory;const saved=state.data.savedLoads||[];
+ return `<div class="section-intro"><div><p>CALCULADORA CON INVENTARIOS INDEPENDIENTES</p><h2>Tus discos, siempre equilibrados.</h2><span>Primero reparte tus discos entre los dos soportes fijos. Después calcula las dos barras de cada polea.</span></div></div>
+ <div class="split-overview"><div><span>Inventario completo</span><strong>${kg(inventoryTotal(inv))}</strong><small>${inv.reduce((s,p)=>s+p.count,0)} discos en total</small></div><div><span>Soporte polea 1</span><strong>${kg(poolTotal(1))}</strong><small>${stockCount(1)} discos reservados</small></div><div><span>Soporte polea 2</span><strong>${kg(poolTotal(2))}</strong><small>${stockCount(2)} discos reservados</small></div></div>
+ <div class="calc-grid split-layout"><div class="panel calc-controls"><div class="panel-heading"><h3>1. Elige los kilos de cada polea</h3><span class="mini-icon">${I('calculator')}</span></div>
+ <div class="diagram-wrap">${cableDiagram(4)}</div>
+ <div class="pulley-targets"><label>Polea 1 · total de ambas barras<div class="weight-input"><input id="calcPole1" type="number" min="0" step="0.5" inputmode="decimal" value="${esc(state.calcPole1)}"/><span>kg</span></div><small>La mitad en cada barra · máximo reservado ${kg(poolTotal(1))}</small></label><label>Polea 2 · total de ambas barras<div class="weight-input"><input id="calcPole2" type="number" min="0" step="0.5" inputmode="decimal" value="${esc(state.calcPole2)}"/><span>kg</span></div><small>La mitad en cada barra · máximo reservado ${kg(poolTotal(2))}</small></label></div>
+ <div class="quick-weights">${[[20,20],[40,40],[60,60],[40,60],[94.5,94]].map(a=>`<button data-action="preset-two" data-first="${a[0]}" data-second="${a[1]}">${fmt(a[0])} + ${fmt(a[1])} kg</button>`).join('')}</div>
+ <label class="form-label" for="calcMaxDiscs">Máximo de discos por barra (opcional)</label><div class="weight-input"><input id="calcMaxDiscs" type="number" min="1" max="9999" step="1" placeholder="Sin límite" value="${esc(state.calcMaxDiscs)}"/></div>
+ <button class="btn btn-primary full" data-action="calculate" ${state.calcBusy?'disabled':''}>${I('bolt',18)} ${state.calcBusy?'Calculando…':'Calcular los cuatro lados'}</button>
+ <p class="helper-note">El valor solicitado es el peso total colocado en cada polea. Se reparte entre su barra izquierda y derecha. Puedes pedir cargas distintas para ambas poleas.</p></div>
+ <div class="panel calc-output"><div class="panel-heading"><h3>2. Discos que debes colocar</h3><span class="mini-icon">${I('target')}</span></div>${calcResultMarkup()}</div></div>
+ <section class="panel stock-split-panel"><div class="panel-heading"><div><h3>3. Reparto fijo en los dos soportes</h3><p class="helper-note">Esta reserva se mantiene entre entrenamientos. Si cambias el reparto, la calculadora lo respetará al 100 %.</p></div><span class="mini-icon">${I('dumbbell')}</span></div>
+ <div class="stock-table-wrap"><table class="stock-table"><thead><tr><th>Disco</th><th>Tienes</th><th>Soporte 1</th><th>Soporte 2</th></tr></thead><tbody>${inv.map(p=>{const n=toInt(state.data.pulleyAllocation[String(p.kg)],0,p.count);return `<tr><td><strong>${fmt(p.kg)} kg</strong></td><td>${p.count}</td><td><input aria-label="Discos de ${fmt(p.kg)} kg asignados a polea 1" data-split-weight="${p.kg}" type="number" min="0" max="${p.count}" step="1" value="${n}"/></td><td>${p.count-n}</td></tr>`;}).join('')}</tbody><tfoot><tr><td>Total</td><td>${kg(inventoryTotal(inv))}</td><td>${kg(poolTotal(1))}</td><td>${kg(poolTotal(2))}</td></tr></tfoot></table></div>
+ <div class="settings-buttons"><button class="btn btn-secondary" data-action="split-auto">Repartir automáticamente</button><button class="btn btn-secondary" data-action="split-reset">Restaurar reparto 94,5 / 94 kg</button><button class="btn btn-secondary" data-nav="ajustes">Cambiar mi inventario</button></div>
+ <p class="helper-note">El reparto original coloca los 2 discos de 1,25 kg juntos en la polea 1. No mezcla discos entre poleas durante el cálculo. Si ajustas el soporte 1, el soporte 2 recibe el resto.</p></section>
+ <section class="panel"><div class="panel-heading"><h3>Combinaciones guardadas</h3><span class="mini-icon">${I('heart')}</span></div>${saved.length?`<div class="saved-load-list">${saved.map((v,i)=>`<div class="saved-load"><div><strong>${esc(v.name)}</strong><small>${kg(v.totals[0])} / ${kg(v.totals[1])}</small></div><div class="settings-buttons"><button class="btn btn-secondary" data-action="use-load" data-index="${i}">Calcular</button><button class="btn btn-secondary" data-action="delete-load" data-index="${i}" aria-label="Eliminar combinación">${I('trash',15)}</button></div></div>`).join('')}</div>`:'<p class="helper-note">Puedes guardar una carga habitual desde el resultado de la calculadora.</p>'}</section>
+ <div class="disclaimer">${I('info',17)} La masa de discos no equivale necesariamente a la resistencia efectiva del cable. Comprueba la capacidad máxima de la máquina, la longitud útil de las barras y los cierres de seguridad.</div>`;
+}
 function history(){const logs=state.logs||[];const completed=logs.length;const volume=logs.reduce((sum,log)=>sum+(log.exercises||[]).reduce((s,ex)=>s+(ex.sets||[]).reduce((v,x)=>v+Number(x.kg||0)*Number(x.reps||0),0),0),0);
  const last=logs.slice(0,8).reverse();const max=Math.max(1,...last.map(l=>l.exercises.reduce((sum,x)=>sum+x.sets.reduce((s,v)=>s+Number(v.kg||0)*Number(v.reps||0),0),0)));
  return `<div class="section-intro"><div><p>LO QUE SE MIDE, MEJORA</p><h2>Tu progreso, en números.</h2><span>Consulta las sesiones terminadas y el volumen registrado.</span></div><button class="btn btn-secondary" data-action="export">${I('download',18)} Exportar</button></div>
@@ -154,29 +222,65 @@ function training(){const entries=getList(state.trainingDay||state.day);
 function renderModal(){const m=state.modal;if(!m)return '';
  let content='';
  if(m.type==='add'){
-  const matches=getCatalog().filter(x=>(x.name+' '+x.muscle).toLowerCase().includes((m.query||'').toLowerCase()));
+  const matches=getCatalog().filter(x=>textMatch(x.name+' '+x.muscle+' '+x.equipment).includes(textMatch(m.query||'')));
   content=`<div class="modal-kicker">ELIGE TU MOVIMIENTO</div><h2>Añadir ejercicio a ${esc(m.day)}</h2><label class="search-box modal-search">${I('search')}<input id="modalSearch" type="search" placeholder="Buscar ejercicios..." value="${esc(m.query||'')}"/></label><div class="modal-list">${matches.slice(0,55).map(x=>`<button class="modal-ex" data-action="select-exercise" data-id="${esc(x.id)}" data-day="${esc(m.day)}">${art(x,'micro')}<span><strong>${esc(x.name)}</strong><small>${esc(x.muscle)} · ${esc(x.equipment)}</small></span>${I('plus',18)}</button>`).join('')||'<p>No hay ejercicios con ese nombre.</p>'}</div>`;
  }else if(m.type==='edit' || m.type==='configure'){
   const e=m.type==='edit'?getList(m.day)[m.index]:null,ex=getEx(m.id||e?.id);
   content=`<div class="modal-kicker">CONFIGURAR ENTRENAMIENTO</div><h2>${esc(ex.name)}</h2><p class="modal-sub">${esc(ex.muscle)} · ${esc(ex.equipment)}</p><form id="exerciseForm"><div class="form-triple"><label>Series<input name="sets" type="number" min="1" max="20" required value="${e?.sets||3}"/></label><label>Repeticiones<input name="reps" type="number" min="1" max="999" required value="${e?.reps||12}"/></label><label>Peso (kg)<input name="kg" type="number" step="0.25" min="0" max="9999" required value="${e?.kg??0}"/></label></div><button class="btn btn-primary full" type="submit">${I('check',17)} ${m.type==='edit'?'Guardar cambios':'Añadir a la rutina'}</button></form>`;
  }else if(m.type==='detail'){
-  const ex=getEx(m.id);content=`<div class="detail-visual">${art(ex,'large')}</div><div class="modal-kicker">${esc(ex.muscle)} · ${esc(ex.equipment)}</div><h2>${esc(ex.name)}</h2><p class="modal-sub">${esc(ex.tip)}</p><button class="btn btn-primary full" data-action="add-one" data-id="${esc(ex.id)}">${I('plus',17)} Añadir a ${esc(state.day)}</button>`;
+  const ex=getEx(m.id),custom=state.data.customExercises.some(x=>x.id===m.id);
+  content=`<div class="detail-visual">${art(ex,'large')}</div><div class="modal-kicker">${esc(ex.muscle)} · ${esc(ex.equipment)}${ex.source?' · GIF externo':''}</div><h2>${esc(ex.name)}</h2><p class="modal-sub">${esc(ex.tip)}</p><button class="btn btn-primary full" data-action="add-one" data-id="${esc(ex.id)}">${I('plus',17)} Añadir a ${esc(state.day)}</button>${custom?`<div class="settings-buttons custom-edit-actions"><button class="btn btn-secondary" data-action="edit-custom" data-id="${esc(ex.id)}">${I('edit',16)} Editar ejercicio</button><button class="btn btn-secondary" data-action="delete-custom" data-id="${esc(ex.id)}">${I('trash',16)} Eliminar</button></div>`:''}`;
  }else if(m.type==='custom'){
-  content=`<div class="modal-kicker">TU PROPIO CATÁLOGO</div><h2>Crear ejercicio</h2><form id="customForm" class="stack-form"><label>Nombre<input required maxlength="90" name="name" placeholder="Ej. Remo en máquina alta"/></label><label>Grupo muscular<select name="muscle">${MUSCLES.filter(x=>x!=='Todos').map(x=>`<option>${esc(x)}</option>`).join('')}</select></label><label>Material<select name="equipment"><option>Polea</option><option>Mancuernas</option><option>Barra</option><option>Máquina</option><option>Peso corporal</option><option>Otro</option></select></label><label>Enlace HTTPS de GIF / imagen (opcional)<input name="media" type="url" placeholder="https://.../ejercicio.gif"/></label><label>Consejo (opcional)<textarea name="tip" maxlength="200" rows="2"></textarea></label><p class="helper-note">Utiliza únicamente imágenes o GIFs propios, o archivos que tengas permiso de usar.</p><button class="btn btn-primary full" type="submit">Crear ejercicio</button></form>`;
+  const current=state.data.customExercises.find(x=>x.id===m.id);const editing=Boolean(current);
+  content=`<div class="modal-kicker">TU CATÁLOGO PERSONAL</div><h2>${editing?'Editar ejercicio':'Crear nuevo ejercicio'}</h2><form id="customForm" class="stack-form"><label>Nombre<input required maxlength="90" name="name" value="${esc(current?.name||'')}" placeholder="Ej. Press de banca inclinado en máquina"/></label><label>Grupo muscular<select name="muscle">${MUSCLES.filter(x=>x!=='Todos').map(x=>`<option ${current?.muscle===x?'selected':''}>${esc(x)}</option>`).join('')}</select></label><label>Material<select name="equipment">${['Polea','Mancuernas','Barra','Máquina','Peso corporal','Banda','Otro'].map(x=>`<option ${current?.equipment===x?'selected':''}>${esc(x)}</option>`).join('')}</select></label><label>Enlace HTTPS de GIF o imagen (opcional)<input name="media" type="url" value="${esc(current?.media||'')}" placeholder="https://.../ejercicio.gif"/></label><label>Consejos de ejecución<textarea name="tip" maxlength="700" rows="3">${esc(current?.tip||'')}</textarea></label><p class="helper-note">Puedes añadir GIFs autorizados o imágenes propias. Estos cambios se sincronizan con tu cuenta de Firebase.</p><button class="btn btn-primary full" type="submit">${I('check',17)} ${editing?'Guardar cambios':'Crear ejercicio'}</button></form>`;
  }else if(m.type==='log'){
   const log=state.logs.find(x=>x.id===m.id);if(log)content=`<div class="modal-kicker">SESIÓN GUARDADA</div><h2>${esc(log.day)}</h2><p class="modal-sub">${new Date(log.date).toLocaleString('es-ES')}</p>${log.exercises.map(x=>`<div class="log-ex"><strong>${esc(getEx(x.id).name)}</strong>${x.sets.map(s=>`<small>${fmt(s.reps)} repeticiones · ${kg(s.kg)}</small>`).join('')}</div>`).join('')}<button class="btn btn-secondary full" data-action="delete-log" data-id="${esc(log.id)}">${I('trash',17)} Eliminar sesión</button>`;
  }
  return `<div class="modal-backdrop" data-action="close-modal"><div class="modal-card" role="dialog" aria-modal="true" aria-label="${esc(m.type)}" data-stop="true"><button class="modal-close" data-action="close-modal" aria-label="Cerrar">${I('close')}</button>${content}</div></div>`;
 }
-function authView(){return `<div class="auth-layout"><div class="auth-brand"><div class="brand-auth">${I('dumbbell',29)} <strong>FORGE<span>FIT</span></strong></div><h1>Entrena con un<br/><em>propósito.</em></h1><p>Tus rutinas, tus marcas y tu gimnasio. Todo en un mismo lugar.</p><div class="auth-visual"><div class="auth-orbit"></div>${I('dumbbell',120)}</div></div><div class="auth-form-side"><div class="auth-form-card"><span class="eyebrow">EMPIEZA HOY</span><h2>${state.authMode==='register'?'Crea tu cuenta':state.authMode==='reset'?'Recupera tu cuenta':'Bienvenido de nuevo'}</h2><p>${state.authMode==='register'?'Guarda tu entrenamiento y sincronízalo en todos tus dispositivos.':'Accede a tus entrenamientos y sigue progresando.'}</p><form id="authForm" class="stack-form">${state.authMode==='register'?'<label>Tu nombre<input name="name" autocomplete="name" required maxlength="40" placeholder="¿Cómo te llamas?"/></label>':''}<label>Correo electrónico<input name="email" type="email" required autocomplete="email" placeholder="tu@correo.com"/></label>${state.authMode!=='reset'?`<label>Contraseña<input name="password" type="password" minlength="6" required autocomplete="${state.authMode==='register'?'new-password':'current-password'}" placeholder="Mínimo 6 caracteres"/></label>`:''}<button class="btn btn-primary full" ${state.authBusy?'disabled':''} type="submit">${state.authMode==='register'?'Crear cuenta':state.authMode==='reset'?'Enviar recuperación':'Entrar en mi cuenta'} ${I('arrow',17)}</button></form><div class="auth-switch">${state.authMode==='login'?`¿No tienes cuenta? <button data-action="auth-mode" data-value="register">Regístrate</button>`:state.authMode==='register'?`¿Ya tienes cuenta? <button data-action="auth-mode" data-value="login">Iniciar sesión</button>`:`<button data-action="auth-mode" data-value="login">Volver a iniciar sesión</button>`}</div>${state.authMode==='login'?`<button class="forgot" data-action="auth-mode" data-value="reset">He olvidado mi contraseña</button>`:''}<div class="auth-separator">o prueba antes de registrarte</div><button class="btn btn-secondary full" data-action="demo">Entrar en modo demostración</button><p class="auth-footnote">La demostración guarda los datos únicamente en este navegador.</p></div></div></div>`;}
+function authView(){return `<div class="auth-layout"><div class="auth-brand"><div class="brand-auth">${I('dumbbell',29)} <strong>FORGE<span>FIT</span></strong></div><h1>Entrena con un<br/><em>propósito.</em></h1><p>Tus rutinas, tus marcas y tu gimnasio. Todo en un mismo lugar.</p><div class="auth-visual"><div class="auth-orbit"></div>${I('dumbbell',120)}</div></div><div class="auth-form-side"><div class="auth-form-card"><span class="eyebrow">ACCESO PRIVADO</span><h2>${state.authMode==='reset'?'Recuperar contraseña':'Bienvenido de nuevo'}</h2><p>Solo pueden entrar las personas autorizadas por el administrador.</p><form id="authForm" class="stack-form"><label>Correo electrónico<input name="email" type="email" required autocomplete="email" placeholder="tu@correo.com"/></label>${state.authMode!=='reset'?`<label>Contraseña<input name="password" type="password" minlength="6" required autocomplete="current-password" placeholder="Tu contraseña"/></label>`:''}<button class="btn btn-primary full" ${state.authBusy?'disabled':''} type="submit">${state.authMode==='reset'?'Enviar instrucciones':'Entrar en mi cuenta'} ${I('arrow',17)}</button></form><div class="auth-switch">${state.authMode==='reset'?`<button data-action="auth-mode" data-value="login">Volver a iniciar sesión</button>`:''}</div>${state.authMode==='login'?`<button class="forgot" data-action="auth-mode" data-value="reset">He olvidado mi contraseña</button>`:''}<p class="auth-footnote">Acceso por invitación. Solicita tu cuenta a quien administra ForgeFit.</p></div></div></div>`;}
 function render(){
  if(state.loading){root.innerHTML='<div class="loader"><div class="spinner"></div><h2>ForgeFit</h2><p>Cargando tus datos...</p></div>';return;}
- if(state.cloudError && !state.demo){root.innerHTML=`<div class="loader"><h2>No se pudo conectar a Firebase</h2><p>${esc(state.cloudError)}</p><button class="btn btn-primary" data-action="demo">Probar la app sin cuenta</button></div>`;return;}
+ if(state.cloudError && !state.demo){root.innerHTML=`<div class="loader"><h2>No se pudo conectar a Firebase</h2><p>${esc(state.cloudError)}</p><p>Revisa la conexión o contacta con el administrador.</p></div>`;return;}
  if(configured&&!state.demo&&!state.user){root.innerHTML=authView();return;}
  root.innerHTML=`<div class="app-shell">${sidebar()}<div class="main-shell">${header()}<main class="content">${state.training?training():state.page==='inicio'?dashboard():state.page==='rutina'?weekView():state.page==='ejercicios'?library():state.page==='calculadora'?calculator():state.page==='historial'?history():settings()}</main><footer class="app-footer"><span>FORGEFIT · ENTRENAMIENTO INTELIGENTE</span><span>Construye tu progreso, día a día.</span></footer></div>${mobileNav()}</div>${renderModal()}`;
 }
 
-function recalc(){state.calcResult=solveLoad(state.data.inventory,state.calcBars,state.calcTotal,{approximate:state.calcApprox});render();}
+async function recalc(){
+ const a=Number(state.calcPole1),b=Number(state.calcPole2);
+ const max=state.calcMaxDiscs===''?0:Number(state.calcMaxDiscs);
+ if(!Number.isFinite(a)||!Number.isFinite(b)||a<0||b<0||
+    !Number.isInteger(max)||max<0||max>9999){
+  state.calcResult={ok:false,error:'Introduce cantidades válidas y un máximo entero de discos por barra.'};render();return;
+ }
+ if(a===0&&b===0){state.calcResult={ok:false,error:'Introduce una carga mayor que cero al menos en una polea.'};render();return;}
+ state.calcBusy=true;state.calcResult=null;render();
+ await new Promise(resolve=>setTimeout(resolve,25));
+ try{state.calcResult=solveSeparated(pool(1),pool(2),a,b,max);}
+ catch(e){state.calcResult={ok:false,error:'No se pudo completar el cálculo. Prueba una carga diferente.'};}
+ state.calcBusy=false;render();
+}
+function autoSplitPools(){
+ const inv=state.data.inventory;
+ const original=inv.length===DEFAULT_INVENTORY.length&&DEFAULT_INVENTORY.every(p=>inv.some(x=>x.kg===p.kg&&x.count===p.count));
+ if(original){state.data.pulleyAllocation=clone(defaultAlloc);return;}
+ for(const p of inv)state.data.pulleyAllocation[String(p.kg)]=Math.floor(p.count/2);
+ // Mantén los discos de 1,25 kg juntos siempre que sea posible.
+ for(const p of inv)if(Math.round(p.kg*100)%50!==0&&p.count%2===0&&state.data.pulleyAllocation[String(p.kg)]%2===1)
+  state.data.pulleyAllocation[String(p.kg)]++;
+ for(let t=0;t<inv.length*3;t++){
+  const diff=poolTotal(1)-poolTotal(2);let best=null,improvement=0;
+  for(const p of inv)for(const delta of [-1,1]){
+   const key=String(p.kg),n=state.data.pulleyAllocation[key]+delta;
+   if(n<0||n>p.count)continue;
+   const after=Math.abs(diff+2*delta*p.kg),gain=Math.abs(diff)-after;
+   if(gain>improvement+1e-7){best={key,n};improvement=gain;}
+  }
+  if(!best)break;
+  state.data.pulleyAllocation[best.key]=best.n;
+ }
+}
+
 function beginTraining(day){const list=getList(day);if(!list.length){notify('Añade algún ejercicio primero.');return;}
  state.trainingDay=day;state.training=true;state.draft={};list.forEach((ex,i)=>{state.draft[i]=Array.from({length:Math.max(1,toInt(ex.sets,1,20))},()=>({reps:ex.reps,kg:ex.kg}));});render();window.scrollTo(0,0);
 }
@@ -221,12 +325,15 @@ root.addEventListener('click',async e=>{
  if(node.dataset.muscle){state.muscle=node.dataset.muscle;render();return;}
  const act=node.dataset.action;if(!act)return;
  if(act==='close-modal'){if(e.target.closest('[data-stop]')&&!node.classList.contains('modal-close'))return;state.modal=null;render();return;}
- if(act==='auth-mode'){state.authMode=node.dataset.value;render();return;}
- if(act==='demo'){state.demo=true;state.loading=false;state.cloudError='';state.data=readDemo();state.logs=readLogs();render();return;}
+ if(act==='auth-mode'){state.authMode=node.dataset.value==='reset'?'reset':'login';render();return;}
+ if(act==='demo'){if(configured)return;state.demo=true;state.loading=false;state.cloudError='';state.data=readDemo();state.logs=readLogs();render();return;}
  if(act==='show-login'){state.demo=false;state.user=null;state.authMode='login';render();return;}
  if(act==='logout'&&state.firebase){clearTimeout(state.saveTimer);await state.firebase.authApi.signOut(state.firebase.auth);state.user=null;state.authMode='login';state.demo=false;state.page='inicio';render();return;}
  if(act==='add'){state.modal={type:'add',day:node.dataset.day||state.day,query:''};render();return;}
+ if(act==='more-catalog'){state.visibleCatalog+=48;render();return;}
  if(act==='custom'){state.modal={type:'custom'};render();return;}
+ if(act==='edit-custom'){state.modal={type:'custom',id:node.dataset.id};render();return;}
+ if(act==='delete-custom'){const id=node.dataset.id;if(!confirm('¿Borrar este ejercicio personalizado? Los entrenamientos que ya lo utilizan conservarán su identificador.'))return;state.data.customExercises=state.data.customExercises.filter(x=>x.id!==id);state.modal=null;saveData();render();return;}
  if(act==='detail'){state.modal={type:'detail',id:node.dataset.id};render();return;}
  if(act==='select-exercise'){state.modal={type:'configure',id:node.dataset.id,day:node.dataset.day};render();return;}
  if(act==='add-one'){state.modal={type:'configure',id:node.dataset.id,day:state.day};render();return;}
@@ -240,11 +347,33 @@ root.addEventListener('click',async e=>{
   const day=state.trainingDay||state.day;const exercises=getList(day).map((ex,i)=>({id:ex.id,sets:clone(state.draft[i]||[])}));
   const log={id:uid(),date:stamp(),day,exercises};await saveLog(log);state.training=false;state.page='historial';render();notify('¡Entrenamiento guardado!');return;
  }
- if(act==='bars'){state.calcBars=Number(node.dataset.value);state.calcResult=null;render();return;}
- if(act==='preset'){state.calcTotal=Number(node.dataset.value);state.calcResult=null;recalc();return;}
- if(act==='calculate'){state.calcTotal=Number($('#calcTotal')?.value);state.calcApprox=Boolean($('#calcApprox')?.checked);recalc();return;}
- if(act==='adjust-stock'){const i=Number(node.dataset.index);state.data.inventory[i].count=toInt(state.data.inventory[i].count+Number(node.dataset.value),0,100);state.calcResult=null;saveData();render();return;}
- if(act==='reset-stock'){if(confirm('¿Restablecer las cantidades originales de discos?')){state.data.inventory=clone(DEFAULT_INVENTORY);state.calcResult=null;saveData();render();}return;}
+ if(act==='preset-two'){state.calcPole1=Number(node.dataset.first);state.calcPole2=Number(node.dataset.second);await recalc();return;}
+ if(act==='calculate'){
+  state.calcPole1=Number($('#calcPole1')?.value);state.calcPole2=Number($('#calcPole2')?.value);
+  state.calcMaxDiscs=$('#calcMaxDiscs')?.value||'';
+  await recalc();return;
+ }
+ if(act==='split-auto'){autoSplitPools();invalidateCalc();saveData();render();notify('Discos reservados en los dos soportes');return;}
+ if(act==='split-reset'){
+  if(!DEFAULT_INVENTORY.every(p=>state.data.inventory.some(x=>x.kg===p.kg&&x.count===p.count))){notify('Para restaurar 94,5/94 kg necesitas primero los 72 discos originales.');return;}
+  state.data.pulleyAllocation=clone(defaultAlloc);invalidateCalc();saveData();render();notify('Reparto original: 94,5 kg / 94 kg');return;
+ }
+ if(act==='save-load' && state.calcResult?.ok){
+  const r=state.calcResult;
+  const title=prompt('Nombre de esta combinación:',`Polea 1 ${fmt(r.totals[0])} kg · Polea 2 ${fmt(r.totals[1])} kg`);
+  if(title===null||!title.trim())return;
+  state.data.savedLoads=[{id:uid(),name:title.trim().slice(0,70),totals:r.totals},...(state.data.savedLoads||[])].slice(0,60);
+  saveData();render();notify('Combinación guardada');return;
+ }
+ if(act==='use-load'){
+  const saved=state.data.savedLoads?.[Number(node.dataset.index)];if(!saved)return;
+  state.calcPole1=saved.totals[0];state.calcPole2=saved.totals[1];await recalc();return;
+ }
+ if(act==='delete-load'){
+  state.data.savedLoads.splice(Number(node.dataset.index),1);saveData();render();return;
+ }
+ if(act==='adjust-stock'){const i=Number(node.dataset.index);state.data.inventory[i].count=toInt(state.data.inventory[i].count+Number(node.dataset.value),0,100);state.data.pulleyAllocation[String(state.data.inventory[i].kg)]=Math.min(state.data.pulleyAllocation[String(state.data.inventory[i].kg)]??0,state.data.inventory[i].count);invalidateCalc();saveData();render();return;}
+ if(act==='reset-stock'){if(confirm('¿Restablecer las cantidades originales de discos?')){state.data.inventory=clone(DEFAULT_INVENTORY);state.data.pulleyAllocation=clone(defaultAlloc);invalidateCalc();saveData();render();}return;}
  if(act==='save-profile'){state.data.profile.name=($('#profileName')?.value||'Deportista').trim().slice(0,40);state.data.profile.goal=($('#profileGoal')?.value||'').trim().slice(0,80);saveData();render();notify('Perfil guardado');return;}
  if(act==='export'){
   const json=JSON.stringify({app:'ForgeFit',version:1,exportedAt:stamp(),data:state.data,logs:state.logs},null,2);
@@ -265,34 +394,34 @@ root.addEventListener('submit',async e=>{
   if(!state.firebase){notify('Firebase aún no está conectado.');return;}
   state.authBusy=true;const {auth,authApi}=state.firebase;
   try{
-   if(state.authMode==='register'){
-    const result=await authApi.createUserWithEmailAndPassword(auth,String(form.get('email')),String(form.get('password')));
-    const name=String(form.get('name')).trim().slice(0,40);
-    await authApi.updateProfile(result.user,{displayName:name});
-    const first=defaultData();first.profile.name=name||'Deportista';
-    await state.firebase.api.setDoc(state.firebase.api.doc(state.firebase.db,'users',result.user.uid,'data','main'),first);
-    notify('¡Cuenta creada!');
-   }else if(state.authMode==='reset'){
+   if(state.authMode==='reset'){
     await authApi.sendPasswordResetEmail(auth,String(form.get('email')));state.authMode='login';notify('Si existe una cuenta con ese correo, recibirá instrucciones.');
    }else await authApi.signInWithEmailAndPassword(auth,String(form.get('email')),String(form.get('password')));
   }catch(err){notify(humanError(err));}finally{state.authBusy=false;render();}
   return;
  }
  if(f.id==='exerciseForm'){
-  const m=state.modal,entry={id:m.type==='edit'?getList(m.day)[m.index].id:m.id,sets:toInt(form.get('sets'),1,20),reps:toInt(form.get('reps'),1,999),kg:toNum(form.get('kg'),0,9999)};
+  const m=state.modal,exId=m.type==='edit'?getList(m.day)[m.index].id:m.id,ex=getEx(exId),
+   entry={id:exId,sets:toInt(form.get('sets'),1,20),reps:toInt(form.get('reps'),1,999),kg:toNum(form.get('kg'),0,9999),
+   snapshot:{name:ex.name,muscle:ex.muscle,equipment:ex.equipment,tip:ex.tip,media:ex.media}};
   if(m.type==='edit')state.data.routine[m.day][m.index]=entry;else state.data.routine[m.day].push(entry);
   state.day=m.day;state.modal=null;state.page='rutina';saveData();render();notify('Rutina actualizada');return;
  }
  if(f.id==='customForm'){
   const media=String(form.get('media')||'').trim();
   if(media&&!/^https:\/\//i.test(media)){notify('La URL de imagen debe comenzar por https://');return;}
-  const ex={id:'custom-'+uid(),name:String(form.get('name')).trim().slice(0,90),muscle:String(form.get('muscle')),equipment:String(form.get('equipment')),type:'pull',tip:String(form.get('tip')||'').slice(0,200),media};
-  state.data.customExercises.push(ex);state.modal=null;saveData();render();notify('Ejercicio propio creado');return;
+  const name=String(form.get('name')||'').trim();if(!name){notify('Escribe el nombre del ejercicio.');return;}
+  const current=state.data.customExercises.find(x=>x.id===state.modal?.id);
+  const ex={id:current?.id||'custom-'+uid(),name:name.slice(0,90),muscle:String(form.get('muscle')),equipment:String(form.get('equipment')),type:'pull',tip:String(form.get('tip')||'').slice(0,700),media};
+  if(current)Object.assign(current,ex);else state.data.customExercises.push(ex);
+  state.modal=null;saveData();render();notify(current?'Ejercicio actualizado':'Ejercicio propio creado');return;
  }
+
 });
 root.addEventListener('change',e=>{
  const node=e.target;
- if(node.matches('[data-stock]')){const i=Number(node.dataset.stock);state.data.inventory[i].count=toInt(node.value,0,100);state.calcResult=null;saveData();render();}
+ if(node.matches('[data-stock]')){const i=Number(node.dataset.stock);state.data.inventory[i].count=toInt(node.value,0,100);const k=String(state.data.inventory[i].kg);state.data.pulleyAllocation[k]=Math.min(state.data.pulleyAllocation[k]||0,state.data.inventory[i].count);invalidateCalc();saveData();render();}
+ if(node.matches('[data-split-weight]')){const item=state.data.inventory.find(p=>String(p.kg)===node.dataset.splitWeight);if(!item)return;state.data.pulleyAllocation[String(item.kg)]=toInt(node.value,0,item.count);invalidateCalc();saveData();render();}
  if(node.matches('[data-draft]')){const i=Number(node.dataset.exindex),j=Number(node.dataset.setindex),key=node.dataset.draft;if(state.draft[i]?.[j])state.draft[i][j][key]=key==='kg'?toNum(node.value):toInt(node.value);}
  if(node.id==='backupFile'){
   const file=node.files?.[0];if(!file)return;
@@ -318,9 +447,12 @@ root.addEventListener('change',e=>{
 });
 root.addEventListener('input',e=>{
  if(e.target.id==='searchExercises'){
-  state.search=e.target.value;const results=getCatalog().filter(ex=>(state.muscle==='Todos'||ex.muscle===state.muscle)&&(ex.name+' '+ex.muscle+' '+ex.equipment).toLowerCase().includes(state.search.toLowerCase().trim()));
-  const node=$('#catalogGrid');if(node)node.innerHTML=results.length?catalogCards(results):'<div class="empty">No hay coincidencias</div>';
+  state.search=e.target.value;state.visibleCatalog=36;
+  const q=textMatch(state.search);
+  const results=getCatalog().filter(ex=>(state.muscle==='Todos'||ex.muscle===state.muscle)&&textMatch(ex.name+' '+ex.muscle+' '+ex.equipment).includes(q));
+  const node=$('#catalogGrid');if(node)node.innerHTML=results.length?catalogCards(results.slice(0,36)):'<div class="empty">No hay coincidencias</div>';
   const c=$('.catalog-count');if(c)c.textContent=`${results.length} ejercicios encontrados`;
+  const more=$('#catalogMore');if(more)more.innerHTML=results.length>36?`<button class="btn btn-secondary catalog-more" data-action="more-catalog">${I('plus',17)} Mostrar más (${results.length-36} restantes)</button>`:'';
  }
  if(e.target.id==='modalSearch'&&state.modal?.type==='add'){
   state.modal.query=e.target.value;const selected=e.target.selectionStart;
@@ -330,3 +462,4 @@ root.addEventListener('input',e=>{
 
 if('serviceWorker' in navigator && location.protocol==='https:')navigator.serviceWorker.register('./sw.js').catch(()=>{});
 if(configured)startFirebase();else{state.loading=false;render();}
+loadRemoteExercises();

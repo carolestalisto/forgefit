@@ -1,5 +1,5 @@
-const CACHE='forgefit-shell-v1';
-const ASSETS=['./','./index.html','./src/app.js','./src/solver.js','./src/catalog.js','./src/styles.css','./firebase-config.js','./manifest.webmanifest','./assets/icon.svg'];
+const CACHE='forgefit-shell-v2';
+const ASSETS=['./','./index.html','./src/app.js','./src/solver.js','./src/pulley-solver.js','./src/exercise-db.js','./src/catalog.js','./src/styles.css','./firebase-config.js','./manifest.webmanifest','./assets/icon.svg'];
 self.addEventListener('install',event=>{
  event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(ASSETS)).then(()=>self.skipWaiting()));
 });
