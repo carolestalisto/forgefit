@@ -1,0 +1,30 @@
+FORGEFIT · INICIO RÁPIDO
+========================
+
+1. Descomprime ForgeFit-GitHub.zip.
+2. En GitHub crea un REPOSITORIO PÚBLICO nuevo.
+3. Sube TODOS LOS ARCHIVOS DE DENTRO de la carpeta ForgeFit-GitHub
+   (index.html debe quedar en la raíz, no dentro de otra carpeta).
+4. Ve a Settings > Pages > Deploy from a branch > main > /(root) > Save.
+5. Abre la dirección https://TU-USUARIO.github.io/TU-REPOSITORIO/
+
+¡YA FUNCIONA EN MODO DEMO GRATIS!
+En modo demo los datos solo se guardan en el navegador actual.
+
+PARA REGISTROS REALES Y SINCRONIZACIÓN
+------------------------------------
+A. Crea un proyecto Firebase gratuito (Spark).
+B. Activa Authentication > Email/Password.
+C. Crea Cloud Firestore.
+D. En las reglas de Firestore pega el archivo firestore.rules y publícalo.
+E. Añade una app Web y copia sus datos públicos a firebase-config.js.
+F. En Authentication > Settings > Authorized domains, añade TU-USUARIO.github.io.
+G. Actualiza el archivo en GitHub. Ya aparece el registro de usuarios.
+
+NO ES POSIBLE GUARDAR CONTRASEÑAS PRIVADAS EN GITHUB PAGES.
+
+IPHONE
+------
+Abre la URL de GitHub Pages en Safari > Compartir > Añadir a pantalla de inicio.
+
+PARA MÁS DETALLE ABRE README.md

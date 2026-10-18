@@ -1,0 +1,12 @@
+{
+  "name": "forgefit-github",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Aplicación de rutinas, progreso y reparto de discos para poleas",
+  "scripts": {
+    "check": "node --check src/app.js && node --check src/solver.js && node --check src/catalog.js && node --test tests/*.test.js",
+    "serve": "npx serve ."
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,14 @@
+{
+  "name": "ForgeFit · Entrena a tu manera",
+  "short_name": "ForgeFit",
+  "description": "Rutinas y calculadora inteligente para poleas",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#090c13",
+  "theme_color": "#090c13",
+  "lang": "es",
+  "icons": [
+    {"src":"./assets/icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any maskable"}
+  ]
+}
