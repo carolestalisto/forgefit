@@ -7,6 +7,25 @@ import {firebaseConfig} from '../firebase-config.js';
 const $=selector=>document.querySelector(selector);
 const root=$('#root');
 const localKey='forgefit-local-v1';
+const themeKey='forgefit-preferred-theme-v1';
+const THEMES=[
+ {id:'verde',name:'Verde original',a:'#111b20',b:'#a6f1d9'},
+ {id:'azul',name:'Azul',a:'#111e32',b:'#93c8ff'},
+ {id:'rojo',name:'Rojo',a:'#28171c',b:'#ffa1a9'},
+ {id:'amarillo',name:'Amarillo',a:'#242016',b:'#ffe19c'},
+ {id:'rosa',name:'Rosa',a:'#281925',b:'#ffb3d9'},
+ {id:'morado',name:'Morado',a:'#211c33',b:'#c9b7ff'},
+ {id:'claro',name:'Blanco y negro',a:'#ffffff',b:'#19232d'}
+];
+const validTheme=v=>THEMES.some(t=>t.id===v)?v:'verde';
+function applyTheme(id){
+ const theme=validTheme(id);
+ document.documentElement.dataset.theme=theme;
+ try{localStorage.setItem(themeKey,theme);}catch{}
+ const meta=document.querySelector('meta[name=theme-color]');
+ if(meta)meta.setAttribute('content',theme==='claro'?'#ffffff':'#090d14');
+}
+
 const defaultAlloc=Object.fromEntries([[10,3],[5,4],[3,1],[2.5,3],[2,8],[1.5,2],[1.25,2],[1,12],[0.5,1]].map(([w,n])=>[String(w),n]));
 const configured=Boolean(firebaseConfig.apiKey && firebaseConfig.projectId && firebaseConfig.appId);
 const clone=value=>JSON.parse(JSON.stringify(value));
@@ -19,14 +38,14 @@ const toNum=(v,min=0,max=9999)=>Math.max(min,Math.min(max,Math.round((Number(v)|
 const currentDay=()=>DAYS[(new Date().getDay()+6)%7];
 const today=()=>new Date().toLocaleDateString('es-ES',{weekday:'long',day:'numeric',month:'long'});
 const stamp=()=>new Date().toISOString();
-const defaultData=()=>({version:2,profile:{name:'Deportista',goal:'Ganar fuerza'},inventory:clone(DEFAULT_INVENTORY),routine:clone(STARTER_PLAN),customExercises:[],pulleyAllocation:clone(defaultAlloc),savedLoads:[],bodyRecords:[],nutritionRecords:[]});
+const defaultData=()=>({version:2,theme:'verde',profile:{name:'Deportista',goal:'Ganar fuerza'},inventory:clone(DEFAULT_INVENTORY),routine:clone(STARTER_PLAN),customExercises:[],pulleyAllocation:clone(defaultAlloc),savedLoads:[],bodyRecords:[],nutritionRecords:[]});
 function normalize(data){
  const initial=defaultData();
  const d=(data && typeof data==='object')?data:{};
  const inventory=Array.isArray(d.inventory)?d.inventory:initial.inventory;
  const allocation={...initial.pulleyAllocation,...(d.pulleyAllocation||{})};
  for(const p of inventory) allocation[String(p.kg)]=toInt(allocation[String(p.kg)]??Math.floor(p.count/2),0,p.count);
- return {...initial,...d,profile:{...initial.profile,...(d.profile||{})},inventory,
+ return {...initial,...d,theme:validTheme(d.theme),profile:{...initial.profile,...(d.profile||{})},inventory,
   routine:{...initial.routine,...(d.routine||{})},customExercises:Array.isArray(d.customExercises)?d.customExercises:[],
   pulleyAllocation:allocation,savedLoads:Array.isArray(d.savedLoads)?d.savedLoads.slice(0,60):[],
   bodyRecords:Array.isArray(d.bodyRecords)?d.bodyRecords.filter(x=>x&&typeof x==='object'&&typeof x.id==='string').slice(0,400):[],
@@ -38,6 +57,8 @@ const state={page:'inicio',day:currentDay(),muscle:'Todos',search:'',visibleCata
  demo:!configured,user:null,authMode:'login',authBusy:false,
  data:readDemo(),logs:readLogs(),modal:null,toast:'',calcPole1:40,calcPole2:40,calcBusy:false,calcResult:null,
  training:false,draft:{},progressTab:'cuerpo',bodyMetric:'weight',nutritionMetric:'calories',loading:configured,cloudError:'',firebase:null,unsubs:[],saveTimer:null,savePending:false};
+
+try{applyTheme(localStorage.getItem(themeKey)||'verde');}catch{applyTheme('verde');}
 
 const paths={
  home:'<path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z"/>',
@@ -287,7 +308,11 @@ function history(){if(state.progressTab==='cuerpo')return bodyProgress();if(stat
  <div class="metrics metrics-two">${stat('Sesiones completadas',String(completed),'check','Historial guardado')}${stat('Volumen acumulado',`${fmt(volume)} kg`,'chart','Suma de peso × repeticiones')}</div>
  <div class="panel history-panel"><div class="panel-heading"><h3>Volumen de tus últimos entrenamientos</h3><span class="mini-icon">${I('chart')}</span></div>${last.length?`<div class="bar-chart">${last.map(l=>{const v=l.exercises.reduce((sum,x)=>sum+x.sets.reduce((s,z)=>s+Number(z.kg||0)*Number(z.reps||0),0),0);return `<div class="chart-item" title="${fmt(v)} kg"><div class="chart-bar" style="height:${Math.max(7,Math.round(v/max*100))}%"></div><small>${new Date(l.date).toLocaleDateString('es-ES',{day:'numeric',month:'numeric'})}</small></div>`}).join('')}</div>`:`<div class="empty mini">${I('chart',31)}<p>Completa un entrenamiento para empezar a ver tus progresos.</p></div>`}</div>
  <div class="section-head"><h2>Historial de sesiones</h2></div><div class="history-list">${logs.length?logs.map(log=>`<button class="history-row" data-action="view-log" data-id="${esc(log.id)}"><span class="history-mark">${I('check')}</span><span><strong>${esc(log.day||'Entrenamiento')}</strong><small>${new Date(log.date).toLocaleDateString('es-ES',{day:'numeric',month:'long',year:'numeric'})} · ${(log.exercises||[]).length} ejercicios</small></span>${I('chevron')}</button>`).join(''):`<div class="empty"><h3>Aún no hay entrenamientos</h3><p>Ve a tu rutina, pulsa Entrenar y guarda tu primera sesión.</p><button class="btn btn-primary" data-nav="rutina">Ir a mi rutina</button></div>`}</div>`;}
-function settings(){return `<div class="section-intro"><div><p>TODO A TU MEDIDA</p><h2>Personaliza tu gimnasio.</h2><span>Cambia tus datos, discos disponibles y copias de seguridad.</span></div></div><div class="settings-grid"><div class="panel"><div class="panel-heading"><h3>Tu perfil</h3><span class="mini-icon">${I('user')}</span></div><div class="fields"><label>Nombre visible<input id="profileName" maxlength="40" value="${esc(state.data.profile.name)}"/></label><label>Objetivo<input id="profileGoal" maxlength="80" value="${esc(state.data.profile.goal)}"/></label></div><button class="btn btn-primary" data-action="save-profile">${I('check',16)} Guardar perfil</button><div class="divider-line"></div><div class="profile-status">${I(state.demo?'info':'cloud')}<div><strong>${state.demo?'Modo de prueba · almacenamiento local':'Cuenta con sincronización'}</strong><small>${state.demo?'Los datos de esta demo se guardan solo en este navegador.':esc(state.user?.email||'Conectado a Firebase')}</small></div></div>${configured?`<button class="btn btn-secondary" data-action="${state.demo?'show-login':'logout'}">${I(state.demo?'user':'logout',17)} ${state.demo?'Entrar con cuenta':'Cerrar sesión'}</button>`:''}</div>
+function themeSettings(){
+ const chosen=validTheme(state.data.theme);
+ return `<section class="panel theme-panel"><div class="panel-heading"><div><h3>Apariencia</h3><p class="settings-description">Elige los colores de ForgeFit. No cambia el logo ni tus rutinas.</p></div><span class="mini-icon">${I('spark')}</span></div><div class="theme-options" role="group" aria-label="Elegir tema de colores">${THEMES.map(t=>`<button type="button" class="theme-choice ${chosen===t.id?'chosen':''}" data-action="set-theme" data-theme-id="${t.id}" aria-pressed="${chosen===t.id}" title="${t.name}"><span class="theme-swatch" style="--swatch-a:${t.a};--swatch-b:${t.b}"><span aria-hidden="true">${chosen===t.id?I('check',18):''}</span></span><span class="theme-name">${t.name}</span></button>`).join('')}</div><p class="theme-helper">${I('cloud',15)} Tu elección se guarda con tu usuario y se sincroniza con Firebase.</p></section>`;
+}
+function settings(){return `<div class="section-intro"><div><p>TODO A TU MEDIDA</p><h2>Personaliza tu gimnasio.</h2><span>Cambia los colores, tus datos, discos disponibles y copias de seguridad.</span></div></div><div class="settings-grid">${themeSettings()}<div class="panel"><div class="panel-heading"><h3>Tu perfil</h3><span class="mini-icon">${I('user')}</span></div><div class="fields"><label>Nombre visible<input id="profileName" maxlength="40" value="${esc(state.data.profile.name)}"/></label><label>Objetivo<input id="profileGoal" maxlength="80" value="${esc(state.data.profile.goal)}"/></label></div><button class="btn btn-primary" data-action="save-profile">${I('check',16)} Guardar perfil</button><div class="divider-line"></div><div class="profile-status">${I(state.demo?'info':'cloud')}<div><strong>${state.demo?'Modo de prueba · almacenamiento local':'Cuenta con sincronización'}</strong><small>${state.demo?'Los datos de esta demo se guardan solo en este navegador.':esc(state.user?.email||'Conectado a Firebase')}</small></div></div>${configured?`<button class="btn btn-secondary" data-action="${state.demo?'show-login':'logout'}">${I(state.demo?'user':'logout',17)} ${state.demo?'Entrar con cuenta':'Cerrar sesión'}</button>`:''}</div>
  <div class="panel"><div class="panel-heading"><h3>Inventario de discos</h3><span class="mini-icon">${I('dumbbell')}</span></div><p class="settings-description">Estos valores son los de tus discos reales. Cambia cantidades cuando compres o retires alguno.</p><div class="inventory-list">${state.data.inventory.map((p,i)=>`<label class="inventory-row"><span><span class="mini-plate"></span>${fmt(p.kg)} kg</span><span class="counter"><button data-action="adjust-stock" data-index="${i}" data-value="-1" aria-label="Quitar disco de ${fmt(p.kg)} kg">−</button><input aria-label="Cantidad de ${fmt(p.kg)} kg" data-stock="${i}" type="number" min="0" max="100" value="${toInt(p.count)}"/><button data-action="adjust-stock" data-index="${i}" data-value="1" aria-label="Añadir disco de ${fmt(p.kg)} kg">+</button></span></label>`).join('')}</div><div class="inventory-total"><span>Total disponible</span><strong>${kg(inventoryTotal(state.data.inventory))}</strong></div><div class="settings-buttons"><button class="btn btn-secondary" data-action="reset-stock">Restablecer inventario</button><button class="btn btn-primary" data-nav="calculadora">Usar calculadora ${I('arrow',15)}</button></div></div>
  <div class="panel"><div class="panel-heading"><h3>Datos y copias de seguridad</h3><span class="mini-icon">${I('download')}</span></div><p class="settings-description">Descarga tus rutinas e historial a un archivo JSON o restaura una copia creada desde esta app.</p><div class="settings-buttons"><button class="btn btn-secondary" data-action="export">${I('download',17)} Exportar mis datos</button><button class="btn btn-secondary" data-action="import">${I('upload',17)} Importar copia</button><input type="file" id="backupFile" accept="application/json,.json" hidden/></div><p class="helper-note">Las importaciones sustituyen tus rutinas, inventario e historial actuales. No exportamos contraseñas.</p></div>
  <div class="panel"><div class="panel-heading"><h3>Instalar en iPhone</h3><span class="mini-icon">${I('heart')}</span></div><p class="settings-description">Abre la web publicada en <strong>Safari</strong>, pulsa <strong>Compartir</strong> y elige <strong>Añadir a pantalla de inicio</strong>. Se abrirá a pantalla completa como una aplicación.</p><div class="notice">${I('info',17)} En un iPhone no se abre la dirección de tu repositorio GitHub. Se abre la URL pública de GitHub Pages.</div></div></div>`;}
@@ -395,10 +420,10 @@ async function startFirebase(){
    const ref=api.doc(db,'users',user.uid,'data','main');
    const unsubscribe=api.onSnapshot(ref,async snapshot=>{
     if(snapshot.exists()){
-     if(!state.savePending)state.data=normalize(snapshot.data());
+     if(!state.savePending){state.data=normalize(snapshot.data());applyTheme(state.data.theme);}
     }else{
      const fresh=defaultData();fresh.profile.name=user.displayName||user.email?.split('@')[0]||'Deportista';
-     state.data=fresh;
+     state.data=fresh;applyTheme(state.data.theme);
      try{await api.setDoc(ref,fresh);}catch(e){notify('Revisa las reglas de Firestore: '+humanError(e));}
     }
     state.loading=false;render();
@@ -479,6 +504,11 @@ root.addEventListener('click',async e=>{
  }
  if(act==='adjust-stock'){const i=Number(node.dataset.index);state.data.inventory[i].count=toInt(state.data.inventory[i].count+Number(node.dataset.value),0,100);state.data.pulleyAllocation[String(state.data.inventory[i].kg)]=Math.min(state.data.pulleyAllocation[String(state.data.inventory[i].kg)]??0,state.data.inventory[i].count);invalidateCalc();saveData();render();return;}
  if(act==='reset-stock'){if(confirm('¿Restablecer las cantidades originales de discos?')){state.data.inventory=clone(DEFAULT_INVENTORY);state.data.pulleyAllocation=clone(defaultAlloc);invalidateCalc();saveData();render();}return;}
+ if(act==='set-theme'){
+  const requested=node.dataset.themeId;
+  if(!THEMES.some(t=>t.id===requested))return;
+  state.data.theme=requested;applyTheme(requested);saveData();render();notify('Tema actualizado');return;
+ }
  if(act==='save-profile'){state.data.profile.name=($('#profileName')?.value||'Deportista').trim().slice(0,40);state.data.profile.goal=($('#profileGoal')?.value||'').trim().slice(0,80);saveData();render();notify('Perfil guardado');return;}
  if(act==='export'){
   const json=JSON.stringify({app:'ForgeFit',version:1,exportedAt:stamp(),data:state.data,logs:state.logs},null,2);
@@ -575,7 +605,7 @@ root.addEventListener('change',e=>{
     const json=JSON.parse(text);
     if(json.app!=='ForgeFit'||!json.data||!Array.isArray(json.logs))throw Error('El archivo no es una copia válida de ForgeFit.');
     if(!confirm('Se sustituirán tu rutina, inventario e historial. ¿Continuar?'))return;
-    state.data=normalize(json.data);state.logs=json.logs.filter(x=>x&&typeof x==='object'&&typeof x.id==='string').slice(0,200);
+    state.data=normalize(json.data);applyTheme(state.data.theme);state.logs=json.logs.filter(x=>x&&typeof x==='object'&&typeof x.id==='string').slice(0,200);
     state.calcResult=null;saveData();
     if(!state.demo&&state.firebase){
      const {api,db}=state.firebase,collectionRef=api.collection(db,'users',state.user.uid,'logs');
