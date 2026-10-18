@@ -9,21 +9,29 @@ const root=$('#root');
 const localKey='forgefit-local-v1';
 const themeKey='forgefit-preferred-theme-v1';
 const THEMES=[
- {id:'verde',name:'Verde original',a:'#111b20',b:'#a6f1d9'},
- {id:'azul',name:'Azul',a:'#111e32',b:'#93c8ff'},
- {id:'rojo',name:'Rojo',a:'#28171c',b:'#ffa1a9'},
- {id:'amarillo',name:'Amarillo',a:'#242016',b:'#ffe19c'},
- {id:'rosa',name:'Rosa',a:'#281925',b:'#ffb3d9'},
- {id:'morado',name:'Morado',a:'#211c33',b:'#c9b7ff'},
- {id:'claro',name:'Blanco y negro',a:'#ffffff',b:'#19232d'}
+ {id:'verde',name:'Verde oscuro',a:'#111b20',b:'#a6f1d9',mode:'dark'},
+ {id:'azul',name:'Azul oscuro',a:'#111e32',b:'#93c8ff',mode:'dark'},
+ {id:'rojo',name:'Rojo oscuro',a:'#28171c',b:'#ffa1a9',mode:'dark'},
+ {id:'amarillo',name:'Amarillo oscuro',a:'#242016',b:'#ffe19c',mode:'dark'},
+ {id:'rosa',name:'Rosa oscuro',a:'#281925',b:'#ffb3d9',mode:'dark'},
+ {id:'morado',name:'Morado oscuro',a:'#211c33',b:'#c9b7ff',mode:'dark'},
+ {id:'verde-claro',name:'Verde claro',a:'#ffffff',b:'#177a5b',mode:'light'},
+ {id:'azul-claro',name:'Azul claro',a:'#ffffff',b:'#205fa9',mode:'light'},
+ {id:'rojo-claro',name:'Rojo claro',a:'#ffffff',b:'#b52d46',mode:'light'},
+ {id:'amarillo-claro',name:'Amarillo claro',a:'#ffffff',b:'#886000',mode:'light'},
+ {id:'rosa-claro',name:'Rosa claro',a:'#ffffff',b:'#a82b73',mode:'light'},
+ {id:'morado-claro',name:'Morado claro',a:'#ffffff',b:'#7044b2',mode:'light'},
+ {id:'claro',name:'Blanco y negro',a:'#ffffff',b:'#19232d',mode:'light'}
 ];
 const validTheme=v=>THEMES.some(t=>t.id===v)?v:'verde';
 function applyTheme(id){
  const theme=validTheme(id);
+ const mode=THEMES.find(t=>t.id===theme).mode;
  document.documentElement.dataset.theme=theme;
+ document.documentElement.dataset.mode=mode;
  try{localStorage.setItem(themeKey,theme);}catch{}
  const meta=document.querySelector('meta[name=theme-color]');
- if(meta)meta.setAttribute('content',theme==='claro'?'#ffffff':'#090d14');
+ if(meta)meta.setAttribute('content',mode==='light'?'#ffffff':'#090d14');
 }
 
 const defaultAlloc=Object.fromEntries([[10,3],[5,4],[3,1],[2.5,3],[2,8],[1.5,2],[1.25,2],[1,12],[0.5,1]].map(([w,n])=>[String(w),n]));
@@ -310,7 +318,8 @@ function history(){if(state.progressTab==='cuerpo')return bodyProgress();if(stat
  <div class="section-head"><h2>Historial de sesiones</h2></div><div class="history-list">${logs.length?logs.map(log=>`<button class="history-row" data-action="view-log" data-id="${esc(log.id)}"><span class="history-mark">${I('check')}</span><span><strong>${esc(log.day||'Entrenamiento')}</strong><small>${new Date(log.date).toLocaleDateString('es-ES',{day:'numeric',month:'long',year:'numeric'})} · ${(log.exercises||[]).length} ejercicios</small></span>${I('chevron')}</button>`).join(''):`<div class="empty"><h3>Aún no hay entrenamientos</h3><p>Ve a tu rutina, pulsa Entrenar y guarda tu primera sesión.</p><button class="btn btn-primary" data-nav="rutina">Ir a mi rutina</button></div>`}</div>`;}
 function themeSettings(){
  const chosen=validTheme(state.data.theme);
- return `<section class="panel theme-panel"><div class="panel-heading"><div><h3>Apariencia</h3><p class="settings-description">Elige los colores de ForgeFit. No cambia el logo ni tus rutinas.</p></div><span class="mini-icon">${I('spark')}</span></div><div class="theme-options" role="group" aria-label="Elegir tema de colores">${THEMES.map(t=>`<button type="button" class="theme-choice ${chosen===t.id?'chosen':''}" data-action="set-theme" data-theme-id="${t.id}" aria-pressed="${chosen===t.id}" title="${t.name}"><span class="theme-swatch" style="--swatch-a:${t.a};--swatch-b:${t.b}"><span aria-hidden="true">${chosen===t.id?I('check',18):''}</span></span><span class="theme-name">${t.name}</span></button>`).join('')}</div><p class="theme-helper">${I('cloud',15)} Tu elección se guarda con tu usuario y se sincroniza con Firebase.</p></section>`;
+ const choice=t=>`<button type="button" class="theme-choice ${chosen===t.id?'chosen':''}" data-action="set-theme" data-theme-id="${t.id}" aria-pressed="${chosen===t.id}" title="${t.name}"><span class="theme-swatch" style="--swatch-a:${t.a};--swatch-b:${t.b}"><span aria-hidden="true">${chosen===t.id?I('check',18):''}</span></span><span class="theme-name">${t.name}</span></button>`;
+ return `<section class="panel theme-panel"><div class="panel-heading"><div><h3>Apariencia</h3><p class="settings-description">Personaliza el fondo y los colores sin cambiar el logo ni tus rutinas.</p></div><span class="mini-icon">${I('spark')}</span></div><div class="theme-category"><h4>Fondo oscuro</h4><div class="theme-options" role="group" aria-label="Temas con fondo oscuro">${THEMES.filter(t=>t.mode==='dark').map(choice).join('')}</div></div><div class="theme-category"><h4>Fondo blanco</h4><div class="theme-options" role="group" aria-label="Temas con fondo blanco">${THEMES.filter(t=>t.mode==='light').map(choice).join('')}</div></div><p class="theme-helper">${I('cloud',15)} Tu elección se guarda con tu usuario y se sincroniza con Firebase.</p></section>`;
 }
 function settings(){return `<div class="section-intro"><div><p>TODO A TU MEDIDA</p><h2>Personaliza tu gimnasio.</h2><span>Cambia los colores, tus datos, discos disponibles y copias de seguridad.</span></div></div><div class="settings-grid">${themeSettings()}<div class="panel"><div class="panel-heading"><h3>Tu perfil</h3><span class="mini-icon">${I('user')}</span></div><div class="fields"><label>Nombre visible<input id="profileName" maxlength="40" value="${esc(state.data.profile.name)}"/></label><label>Objetivo<input id="profileGoal" maxlength="80" value="${esc(state.data.profile.goal)}"/></label></div><button class="btn btn-primary" data-action="save-profile">${I('check',16)} Guardar perfil</button><div class="divider-line"></div><div class="profile-status">${I(state.demo?'info':'cloud')}<div><strong>${state.demo?'Modo de prueba · almacenamiento local':'Cuenta con sincronización'}</strong><small>${state.demo?'Los datos de esta demo se guardan solo en este navegador.':esc(state.user?.email||'Conectado a Firebase')}</small></div></div>${configured?`<button class="btn btn-secondary" data-action="${state.demo?'show-login':'logout'}">${I(state.demo?'user':'logout',17)} ${state.demo?'Entrar con cuenta':'Cerrar sesión'}</button>`:''}</div>
  <div class="panel"><div class="panel-heading"><h3>Inventario de discos</h3><span class="mini-icon">${I('dumbbell')}</span></div><p class="settings-description">Estos valores son los de tus discos reales. Cambia cantidades cuando compres o retires alguno.</p><div class="inventory-list">${state.data.inventory.map((p,i)=>`<label class="inventory-row"><span><span class="mini-plate"></span>${fmt(p.kg)} kg</span><span class="counter"><button data-action="adjust-stock" data-index="${i}" data-value="-1" aria-label="Quitar disco de ${fmt(p.kg)} kg">−</button><input aria-label="Cantidad de ${fmt(p.kg)} kg" data-stock="${i}" type="number" min="0" max="100" value="${toInt(p.count)}"/><button data-action="adjust-stock" data-index="${i}" data-value="1" aria-label="Añadir disco de ${fmt(p.kg)} kg">+</button></span></label>`).join('')}</div><div class="inventory-total"><span>Total disponible</span><strong>${kg(inventoryTotal(state.data.inventory))}</strong></div><div class="settings-buttons"><button class="btn btn-secondary" data-action="reset-stock">Restablecer inventario</button><button class="btn btn-primary" data-nav="calculadora">Usar calculadora ${I('arrow',15)}</button></div></div>
