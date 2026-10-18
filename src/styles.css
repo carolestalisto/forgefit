@@ -443,3 +443,44 @@
 :root[data-mode="light"] .auth-brand p{color:#557281}
 :root[data-mode="light"] .auth-form-side{background:#fff;color:var(--text)}
 :root[data-mode="light"] #toast{background:#26313f;color:#fff}
+
+
+/* ForgeFit 3.7: weight and nutrition charts/record cards respect ALL 13 color themes. */
+:root[data-theme] .body-progress .body-chart-panel,
+:root[data-theme] .nutrition-progress .body-chart-panel{background:var(--surface);border-color:var(--border);color:var(--text)}
+:root[data-theme] .body-progress .body-line-chart,
+:root[data-theme] .nutrition-progress .body-line-chart{background:var(--surface2);border-color:var(--border)}
+:root[data-theme] .body-progress .body-axis,
+:root[data-theme] .nutrition-progress .body-axis{fill:var(--muted)}
+:root[data-theme] .body-progress .body-chart-choice,
+:root[data-theme] .nutrition-progress .body-chart-choice{color:var(--muted)}
+:root[data-theme] .body-progress .body-chart-choice select,
+:root[data-theme] .nutrition-progress .body-chart-choice select{background:var(--surface2);border-color:var(--border);color:var(--text)}
+:root[data-theme] .body-progress .single-body-point,
+:root[data-theme] .nutrition-progress .single-body-point{background:var(--theme-card);border-color:var(--theme-line)}
+:root[data-theme] .body-progress .single-body-point strong,
+:root[data-theme] .nutrition-progress .single-body-point strong{color:var(--accent)}
+:root[data-theme] .body-progress .single-body-point small,
+:root[data-theme] .nutrition-progress .single-body-point small{color:var(--muted)}
+:root[data-theme] .body-progress .body-record,
+:root[data-theme] .nutrition-progress .nutrition-record{background:var(--surface2);border-color:var(--border);color:var(--text)}
+:root[data-theme] .body-progress .body-record-top,
+:root[data-theme] .nutrition-progress .nutrition-record-top{border-bottom-color:var(--border)}
+:root[data-theme] .body-progress .body-record-date,
+:root[data-theme] .nutrition-progress .body-record-date,
+:root[data-theme] .body-progress .body-record-note,
+:root[data-theme] .nutrition-progress .body-record-note{color:var(--muted)}
+:root[data-theme] .body-progress .body-record h3,
+:root[data-theme] .nutrition-progress .nutrition-record h3,
+:root[data-theme] .body-progress .body-record-values strong,
+:root[data-theme] .nutrition-progress .nutrition-record-macros strong{color:var(--text)}
+:root[data-theme] .body-progress .body-record h3 small,
+:root[data-theme] .nutrition-progress .nutrition-record h3 small,
+:root[data-theme] .body-progress .body-record-values small,
+:root[data-theme] .nutrition-progress .nutrition-record-macros span,
+:root[data-theme] .nutrition-progress .nutrition-history-weight{color:var(--muted)}
+:root[data-theme] .nutrition-progress .nutrition-summary-card{background:var(--surface2);border-color:var(--border)}
+:root[data-theme] .nutrition-progress .nutrition-summary-card small,
+:root[data-theme] .nutrition-progress .nutrition-summary-card em{color:var(--muted)}
+:root[data-theme] .nutrition-progress .nutrition-summary-card strong{color:var(--text)}
+:root[data-theme] .nutrition-progress .nutrition-summary-card:first-child{border-top-color:var(--accent)}
