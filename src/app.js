@@ -35,7 +35,7 @@ function readDemo(){try{return normalize(JSON.parse(localStorage.getItem(localKe
 function readLogs(){try{return JSON.parse(localStorage.getItem(localKey)||'null')?.logs||[];}catch{return [];}}
 const state={page:'inicio',day:currentDay(),muscle:'Todos',search:'',visibleCatalog:36,remoteExercises:[],remoteState:'loading',
  demo:!configured,user:null,authMode:'login',authBusy:false,
- data:readDemo(),logs:readLogs(),modal:null,toast:'',calcPole1:40,calcPole2:40,calcMaxDiscs:'',calcBusy:false,calcResult:null,
+ data:readDemo(),logs:readLogs(),modal:null,toast:'',calcPole1:40,calcPole2:40,calcBusy:false,calcResult:null,
  training:false,draft:{},progressTab:'cuerpo',bodyMetric:'weight',loading:configured,cloudError:'',firebase:null,unsubs:[],saveTimer:null,savePending:false};
 
 const paths={
@@ -195,7 +195,6 @@ function calculator(){
  <div class="diagram-wrap">${cableDiagram(4)}</div>
  <div class="pulley-targets"><label>Polea 1 · total de ambas barras<div class="weight-input"><input id="calcPole1" type="number" min="0" step="0.5" inputmode="decimal" value="${esc(state.calcPole1)}"/><span>kg</span></div><small>La mitad en cada barra · máximo reservado ${kg(poolTotal(1))}</small></label><label>Polea 2 · total de ambas barras<div class="weight-input"><input id="calcPole2" type="number" min="0" step="0.5" inputmode="decimal" value="${esc(state.calcPole2)}"/><span>kg</span></div><small>La mitad en cada barra · máximo reservado ${kg(poolTotal(2))}</small></label></div>
  <div class="quick-weights">${[[20,20],[40,40],[60,60],[40,60],[94.5,94]].map(a=>`<button data-action="preset-two" data-first="${a[0]}" data-second="${a[1]}">${fmt(a[0])} + ${fmt(a[1])} kg</button>`).join('')}</div>
- <label class="form-label" for="calcMaxDiscs">Máximo de discos por barra (opcional)</label><div class="weight-input"><input id="calcMaxDiscs" type="number" min="1" max="9999" step="1" placeholder="Sin límite" value="${esc(state.calcMaxDiscs)}"/></div>
  <button class="btn btn-primary full" data-action="calculate" ${state.calcBusy?'disabled':''}>${I('bolt',18)} ${state.calcBusy?'Calculando…':'Calcular los cuatro lados'}</button>
  <p class="helper-note">El valor solicitado es el peso total colocado en cada polea. Se reparte entre su barra izquierda y derecha. Puedes pedir cargas distintas para ambas poleas.</p></div>
  <div class="panel calc-output"><div class="panel-heading"><h3>2. Discos que debes colocar</h3><span class="mini-icon">${I('target')}</span></div>${calcResultMarkup()}</div></div>
@@ -287,15 +286,13 @@ function render(){
 
 async function recalc(){
  const a=Number(state.calcPole1),b=Number(state.calcPole2);
- const max=state.calcMaxDiscs===''?0:Number(state.calcMaxDiscs);
- if(!Number.isFinite(a)||!Number.isFinite(b)||a<0||b<0||
-    !Number.isInteger(max)||max<0||max>9999){
-  state.calcResult={ok:false,error:'Introduce cantidades válidas y un máximo entero de discos por barra.'};render();return;
+ if(!Number.isFinite(a)||!Number.isFinite(b)||a<0||b<0){
+  state.calcResult={ok:false,error:'Introduce cantidades válidas para las poleas.'};render();return;
  }
  if(a===0&&b===0){state.calcResult={ok:false,error:'Introduce una carga mayor que cero al menos en una polea.'};render();return;}
  state.calcBusy=true;state.calcResult=null;render();
  await new Promise(resolve=>setTimeout(resolve,25));
- try{state.calcResult=solveSeparated(pool(1),pool(2),a,b,max);}
+ try{state.calcResult=solveSeparated(pool(1),pool(2),a,b,0);}
  catch(e){state.calcResult={ok:false,error:'No se pudo completar el cálculo. Prueba una carga diferente.'};}
  state.calcBusy=false;render();
 }
@@ -399,7 +396,6 @@ root.addEventListener('click',async e=>{
  if(act==='preset-two'){state.calcPole1=Number(node.dataset.first);state.calcPole2=Number(node.dataset.second);await recalc();return;}
  if(act==='calculate'){
   state.calcPole1=Number($('#calcPole1')?.value);state.calcPole2=Number($('#calcPole2')?.value);
-  state.calcMaxDiscs=$('#calcMaxDiscs')?.value||'';
   await recalc();return;
  }
  if(act==='split-auto'){autoSplitPools();invalidateCalc();saveData();render();notify('Discos reservados en los dos soportes');return;}

@@ -157,3 +157,17 @@
  .body-form-measure{grid-template-columns:minmax(0,1fr) 78px;gap:8px}
  .body-form-measure select{padding:9px 4px}
 }
+
+/* ForgeFit 3.2: Safari iPhone amplía formularios con tipografía inferior a 16px.
+   Evita el zoom automático al enfocar sin desactivar el zoom manual accesible. */
+@media (max-width: 850px) {
+  input:not([type="checkbox"]):not([type="radio"]),
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+  /* Conserva los números grandes en la calculadora. */
+  .pulley-targets input {
+    font-size: 26px !important;
+  }
+}
