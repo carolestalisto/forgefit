@@ -150,7 +150,14 @@ function validateStoredData(raw){
  }
  return normalize(raw);
 }
-const sameData=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+// Firestore puede devolver las claves de un mapa en un orden diferente.
+// El orden de los ejercicios (arrays) SI importa; el orden de las claves NO.
+function canonicalData(value){
+ if(Array.isArray(value))return value.map(canonicalData);
+ if(value&&typeof value==='object')return Object.fromEntries(Object.keys(value).sort().map(key=>[key,canonicalData(value[key])]));
+ return value;
+}
+const sameData=(a,b)=>JSON.stringify(canonicalData(a))===JSON.stringify(canonicalData(b));
 // Cada día de rutina se considera independiente: editar el lunes no escribe el martes.
 function dataChanges(before,after){
  const changes=[];
@@ -167,20 +174,79 @@ function dataChanges(before,after){
  return changes;
 }
 function readChange(data,path){return path.reduce((v,key)=>v?.[key],data);}
-function mergeUnchanged(base,local,remote){
- const result=clone(remote);
- for(const change of dataChanges(base,local)){
-  if(change.path[0]==='routine'&&change.path.length===2){
-   result.routine??={};result.routine[change.path[1]]=clone(change.value);
-  }else result[change.path[0]]=clone(change.value);
+// Fusionar por intención: nunca enviar una copia obsoleta de una lista entera.
+// Cada inserción nueva recibe un entryUid estable; para rutinas anteriores se usa
+// id + ordinal para conservar compatibilidad con los documentos existentes.
+function keyed(list,kind){
+ const seen=new Map();const result=new Map();
+ for(const item of (list||[])){
+  if(!item||typeof item!=='object')continue;
+  let key;
+  if(kind==='routine'){
+   if(typeof item.entryUid==='string'&&item.entryUid)key='uid:'+item.entryUid;
+   else{const raw=String(item.id||'desconocido');const count=seen.get(raw)||0;seen.set(raw,count+1);key='legacy:'+raw+':'+count;}
+  }else if(kind==='inventory')key='kg:'+String(item.kg);
+  else key='id:'+String(item.id);
+  result.set(key,item);
  }
  return result;
 }
-function applyChanges(server,changes){
- const result=clone(server);
- for(const change of changes){
-  if(change.path.length===2){result[change.path[0]]??={};result[change.path[0]][change.path[1]]=clone(change.value);}
-  else result[change.path[0]]=clone(change.value);
+function mergeProperties(before,desired,remote){
+ const a=(before&&typeof before==='object'&&!Array.isArray(before))?before:{};
+ const b=(desired&&typeof desired==='object'&&!Array.isArray(desired))?desired:{};
+ const c=(remote&&typeof remote==='object'&&!Array.isArray(remote))?remote:{};
+ const result=clone(c);
+ for(const key of new Set([...Object.keys(a),...Object.keys(b)])){
+  if(sameData(a[key],b[key]))continue;
+  if(!Object.hasOwn(b,key)){delete result[key];continue;}
+  if(a[key]&&b[key]&&c[key]&&typeof a[key]==='object'&&!Array.isArray(a[key])&&typeof b[key]==='object'&&!Array.isArray(b[key])&&typeof c[key]==='object'&&!Array.isArray(c[key]))
+   result[key]=mergeProperties(a[key],b[key],c[key]);
+  else result[key]=clone(b[key]);
+ }
+ return result;
+}
+function mergeEntries(before,desired,remote,kind){
+ const A=keyed(before,kind),B=keyed(desired,kind),C=keyed(remote,kind),result=new Map(C);
+ for(const [id,old] of A){
+  if(!B.has(id)){
+   // Borrado explícito. Si otra sesión lo modificó, conservar sus cambios.
+   if(C.has(id)&&sameData(old,C.get(id)))result.delete(id);
+  }else if(!sameData(old,B.get(id))){
+   // Una edición obsoleta nunca resucita algo que fue borrado en la nube.
+   if(C.has(id))result.set(id,mergeProperties(old,B.get(id),C.get(id)));
+  }
+ }
+ for(const [id,item] of B)if(!A.has(id)&&!C.has(id))result.set(id,clone(item));
+ // Mantener el orden del servidor, añadiendo entradas nuevas sin descartar otras.
+ let order=[...result.keys()];
+ if(kind==='routine'){
+  const baseOrder=[...A.keys()].filter(k=>B.has(k));
+  const userOrder=[...B.keys()].filter(k=>A.has(k));
+  if(!sameData(baseOrder,userOrder)){
+   const affected=new Set(userOrder);
+   let idx=0;
+   order=order.map(k=>affected.has(k)?userOrder[idx++]:k);
+  }
+ }
+ return order.filter(k=>result.has(k)).map(k=>clone(result.get(k)));
+}
+function mergeField(before,desired,remote,path){
+ if(sameData(before,desired))return clone(remote);
+ const field=path[0];
+ if(path.length===2&&field==='routine')return mergeEntries(before,desired,remote,'routine');
+ if(['customExercises','bodyRecords','nutritionRecords','savedLoads','inventory'].includes(field))
+  return mergeEntries(before,desired,remote,field==='inventory'?'inventory':'id');
+ if(before&&desired&&remote&&typeof before==='object'&&!Array.isArray(before)&&typeof desired==='object'&&!Array.isArray(desired)&&typeof remote==='object'&&!Array.isArray(remote))
+  return mergeProperties(before,desired,remote);
+ // Para un valor escalar editado por dos sesiones, vence la última edición confirmada.
+ return clone(desired);
+}
+function mergeIntent(base,local,remote){
+ const result=clone(remote);
+ for(const change of dataChanges(base,local)){
+  const value=mergeField(change.before,change.value,readChange(result,change.path),change.path);
+  if(change.path.length===2){result[change.path[0]]??={};result[change.path[0]][change.path[1]]=value;}
+  else result[change.path[0]]=value;
  }
  return result;
 }
@@ -209,23 +275,23 @@ async function flushData(){
   if(generation!==state.authGeneration||state.user?.uid!==ownerUid)throw Error('La sesión ha cambiado durante el guardado.');
   if(!snapshot.exists())throw Error('El documento ha desaparecido del servidor. Guardado bloqueado.');
   const server=validateStoredData(snapshot.data());
-  for(const change of changes){
-   if(!sameData(readChange(server,change.path),change.before)){
-    throw Error(`Conflicto de sincronización en ${change.path.join('.')}. Se ha evitado sobrescribir cambios de otra sesión.`);
-   }
-  }
+  // Rebase atómico contra la versión MÁS RECIENTE de Firebase. Las inserciones
+  // de ambas sesiones se conservan aunque ocurran en el mismo día.
+  const merged=mergeIntent(before,captured,server);
   const updates={};
-  for(const change of changes)updates[change.path.join('.')]=change.value;
-  transaction.update(ref,updates);
-  // Solo produce datos. No modifica state desde el callback (puede repetirse).
-  return applyChanges(server,changes);
+  for(const change of dataChanges(server,merged)){
+   if(change.value===undefined)continue;
+   updates[change.path.join('.')]=change.value;
+  }
+  if(Object.keys(updates).length)transaction.update(ref,updates);
+  return merged;
  });
  state.currentSavePromise=task;
  try{
   const saved=await task;
   if(generation!==state.authGeneration||state.user?.uid!==ownerUid)return;
   state.syncedData=clone(saved);
-  state.data=mergeUnchanged(before,state.data,saved);
+  state.data=mergeIntent(captured,state.data,saved);
   if(!dataChanges(state.syncedData,state.data).length){state.savePending=false;state.saveQueued=false;}
   else state.saveQueued=true;
   render();
@@ -260,7 +326,7 @@ function humanError(e){const c=e?.code||'';
 
 function header(){
  const label=state.page==='inicio'?'Tu espacio de entrenamiento':nav.find(x=>x[0]===state.page)?.[2]||'ForgeFit';
- return `<header class="topbar"><div><div class="eyebrow">${state.page==='inicio'?esc(today()):'FORGEFIT / ENTRENAMIENTO'}</div><h1>${esc(label)}</h1></div><div class="top-actions"><span class="cloud-state">${I(state.demo?'info':'cloud',15)} ${state.demo?'Local':state.writeLocked?'Guardado bloqueado':state.savePending?'Guardando…':state.remoteReady?'Sincronizado':'Conectando…'}</span><button class="avatar" title="Ajustes" data-nav="ajustes">${esc((state.data.profile.name||'T').slice(0,1).toUpperCase())}</button></div></header>`;
+ return `<header class="topbar"><div><div class="eyebrow">${state.page==='inicio'?esc(today()):'FORGEFIT / ENTRENAMIENTO'}</div><h1>${esc(label)}</h1></div><div class="top-actions"><span class="cloud-state">${I(state.demo?'info':'cloud',15)} ${state.demo?'Local':state.writeLocked?'Guardado bloqueado':(state.savePending||state.saveInFlight)?'Guardando…':state.remoteReady?'Sincronizado':'Conectando…'}</span><button class="avatar" title="Ajustes" data-nav="ajustes">${esc((state.data.profile.name||'T').slice(0,1).toUpperCase())}</button></div></header>`;
 }
 function sidebar(){return `<aside class="sidebar"><button class="brand" data-nav="inicio"><span class="brand-icon">${I('dumbbell',27)}</span><span><strong>FORGE<span>FIT</span></strong><small>TRAIN YOUR WAY</small></span></button><div class="sidebar-label">TU ESPACIO</div><nav class="desktop-nav">${nav.map(([page,ico,title])=>`<button class="navlink ${state.page===page?'active':''}" data-nav="${page}">${I(ico)}<span>${title}</span>${state.page===page?'<i></i>':''}</button>`).join('')}</nav><div class="sidebar-foot"><div class="sidebar-quote"><span>${I('bolt')}</span><strong>Cada repetición cuenta.</strong><small>Hazlo por ti.</small></div><small>v3.0 · Hecho para entrenar</small></div></aside>`;}
 function mobileNav(){return `<nav class="mobile-nav" aria-label="Secciones">${nav.slice(0,5).map(([page,ico,title])=>`<button data-nav="${page}" class="${state.page===page?'active':''}">${I(ico,21)}<small>${page==='calculadora'?'Discos':page==='ejercicios'?'Buscar':title.replace('Mi ','')}</small></button>`).join('')}</nav>`;}
@@ -470,7 +536,7 @@ function render(){
  if(state.loading){root.innerHTML='<div class="loader"><div class="spinner"></div><h2>ForgeFit</h2><p>Cargando tus datos...</p></div>';return;}
  if(state.cloudError && !state.demo){root.innerHTML=`<div class="loader"><h2>No se pudo conectar a Firebase</h2><p>${esc(state.cloudError)}</p><p>Revisa la conexión o contacta con el administrador.</p></div>`;return;}
  if(configured&&!state.demo&&!state.user){root.innerHTML=authView();return;}
- root.innerHTML=`<div class="app-shell">${sidebar()}<div class="main-shell">${header()}${state.writeLocked?`<div class="notice" role="alert" style="margin:16px 24px">${I('info',18)} <span>${esc(state.saveError)}</span> <button class="btn btn-secondary" data-action="export">Exportar copia local</button></div>`:''}<main class="content">${state.training?training():state.page==='inicio'?dashboard():state.page==='rutina'?weekView():state.page==='ejercicios'?library():state.page==='calculadora'?calculator():state.page==='historial'?history():settings()}</main><footer class="app-footer"><span>FORGEFIT · ENTRENAMIENTO INTELIGENTE</span><span>Construye tu progreso, día a día.</span></footer></div>${mobileNav()}</div>${renderModal()}`;
+ root.innerHTML=`<div class="app-shell">${sidebar()}<div class="main-shell">${header()}${state.writeLocked?`<div class="notice" role="alert" style="margin:16px 24px">${I('info',18)} <span>${esc(state.saveError)}</span> <button class="btn btn-secondary" data-action="export">Exportar copia local</button> <button class="btn btn-secondary" data-action="review-cloud">Comprobar Firebase</button></div>`:''}<main class="content">${state.training?training():state.page==='inicio'?dashboard():state.page==='rutina'?weekView():state.page==='ejercicios'?library():state.page==='calculadora'?calculator():state.page==='historial'?history():settings()}</main><footer class="app-footer"><span>FORGEFIT · ENTRENAMIENTO INTELIGENTE</span><span>Construye tu progreso, día a día.</span></footer></div>${mobileNav()}</div>${renderModal()}`;
 }
 
 async function recalc(){
@@ -578,6 +644,25 @@ root.addEventListener('click',async e=>{
  if(node.dataset.dayselect){state.day=node.dataset.dayselect;render();return;}
  if(node.dataset.muscle){state.muscle=node.dataset.muscle;render();return;}
  const act=node.dataset.action;if(!act)return;
+ if(!state.demo&&state.user&&!state.remoteReady&&!['export','review-cloud','logout','close-modal','detail','view-log','progress-tab','day-step'].includes(act)){notify('Esperando confirmación de Firebase. No se puede editar todavía.');return;}
+ // Mientras exista un conflicto no permitir editar sin posibilidad de guardado.
+ if(state.writeLocked&&!['export','review-cloud','close-modal','detail','view-log','progress-tab','day-step','logout','auth-mode','show-login'].includes(act)){
+  notify('Esta sesión tiene un conflicto. Guarda una copia local y comprueba Firebase antes de continuar.');return;
+ }
+ if(act==='review-cloud'){
+  if(!state.firebase||!state.user){notify('No hay una sesión de Firebase activa.');return;}
+  const ownerUid=state.user.uid,generation=state.authGeneration;
+  try{
+   const {api,db}=state.firebase;
+   const snapshot=await api.getDocFromServer(api.doc(db,'users',ownerUid,'data','main'));
+   if(generation!==state.authGeneration||state.user?.uid!==ownerUid)return;
+   if(!snapshot.exists()){alert('ATENCIÓN: el documento data/main no existe en el servidor. No cierres esta pantalla antes de exportar tus datos locales.');return;}
+   const remote=validateStoredData(snapshot.data());
+   const summary=DAYS.map(day=>`${day}: ${Array.isArray(remote.routine?.[day])?remote.routine[day].length:0} ejercicios`).join('\n');
+   alert('Estos son los ejercicios que FIREBASE conserva actualmente, no los que están en esta pestaña:\n\n'+summary+'\n\nSi tu pestaña tiene cambios diferentes, pulsa Exportar copia local para conservarlos. No se ha modificado Firebase.');
+  }catch(error){alert('No se han podido leer los datos del servidor: '+humanError(error));}
+  return;
+ }
  if(act==='close-modal'){if(e.target.closest('[data-stop]')&&!node.classList.contains('modal-close'))return;state.modal=null;render();return;}
  if(act==='auth-mode'){state.authMode=node.dataset.value==='reset'?'reset':'login';render();return;}
  if(act==='demo'){if(configured)return;state.demo=true;state.loading=false;state.cloudError='';state.data=readDemo();state.logs=readLogs();render();return;}
@@ -665,7 +750,10 @@ root.addEventListener('click',async e=>{
  }
 });
 root.addEventListener('submit',async e=>{
- e.preventDefault();const f=e.target,form=new FormData(f);
+ e.preventDefault();
+ if(state.writeLocked){notify('Guardado bloqueado. Exporta una copia local y revisa Firebase.');return;}
+ if(!state.demo&&state.user&&!state.remoteReady){notify('Esperando datos confirmados de Firebase.');return;}
+ const f=e.target,form=new FormData(f);
  if(f.id==='authForm'){
   if(!state.firebase){notify('Firebase aún no está conectado.');return;}
   state.authBusy=true;const {auth,authApi}=state.firebase;
@@ -678,7 +766,7 @@ root.addEventListener('submit',async e=>{
  }
  if(f.id==='exerciseForm'){
   const m=state.modal,exId=m.type==='edit'?getList(m.day)[m.index].id:m.id,ex=getEx(exId),
-   entry={id:exId,sets:toInt(form.get('sets'),1,20),reps:toInt(form.get('reps'),1,999),kg:toNum(form.get('kg'),0,9999),
+   entry={id:exId,...(m.type==='edit'?(getList(m.day)[m.index].entryUid?{entryUid:getList(m.day)[m.index].entryUid}:{}):(Number.isInteger(m.replaceIndex)&&getList(m.day)?.[m.replaceIndex]?(getList(m.day)[m.replaceIndex].entryUid?{entryUid:getList(m.day)[m.replaceIndex].entryUid}:{}):{entryUid:uid()})),sets:toInt(form.get('sets'),1,20),reps:toInt(form.get('reps'),1,999),kg:toNum(form.get('kg'),0,9999),
    snapshot:{name:ex.name,muscle:ex.muscle,equipment:ex.equipment,tip:ex.tip,media:ex.media}};
   if(m.type==='edit')state.data.routine[m.day][m.index]=entry;else if(Number.isInteger(m.replaceIndex)&&state.data.routine[m.day]?.[m.replaceIndex])state.data.routine[m.day][m.replaceIndex]=entry;else state.data.routine[m.day].push(entry);
   state.day=m.day;state.modal=null;state.page='rutina';saveData();render();notify('Rutina actualizada');return;
@@ -733,6 +821,9 @@ root.addEventListener('submit',async e=>{
 
 });
 root.addEventListener('change',e=>{
+ if(state.writeLocked&&e.target.id!=='backupFile'){
+  notify('Guardado bloqueado. No puedes editar hasta resolver el conflicto.');render();return;
+ }
  const node=e.target;
  if(node.matches('[data-stock]')){const i=Number(node.dataset.stock);state.data.inventory[i].count=toInt(node.value,0,100);const k=String(state.data.inventory[i].kg);state.data.pulleyAllocation[k]=Math.min(state.data.pulleyAllocation[k]||0,state.data.inventory[i].count);invalidateCalc();saveData();render();}
  if(node.matches('[data-split-weight]')){const item=state.data.inventory.find(p=>String(p.kg)===node.dataset.splitWeight);if(!item)return;state.data.pulleyAllocation[String(item.kg)]=toInt(node.value,0,item.count);invalidateCalc();saveData();render();}
