@@ -55,16 +55,17 @@ function normalize(data){
  for(const p of inventory) allocation[String(p.kg)]=toInt(allocation[String(p.kg)]??Math.floor(p.count/2),0,p.count);
  return {...initial,...d,theme:validTheme(d.theme),profile:{...initial.profile,...(d.profile||{})},inventory,
   routine:{...initial.routine,...(d.routine||{})},customExercises:Array.isArray(d.customExercises)?d.customExercises:[],
-  pulleyAllocation:allocation,savedLoads:Array.isArray(d.savedLoads)?d.savedLoads.slice(0,60):[],
-  bodyRecords:Array.isArray(d.bodyRecords)?d.bodyRecords.filter(x=>x&&typeof x==='object'&&typeof x.id==='string').slice(0,400):[],
-  nutritionRecords:Array.isArray(d.nutritionRecords)?d.nutritionRecords.filter(x=>x&&typeof x==='object'&&typeof x.id==='string').slice(0,500):[]};
+  pulleyAllocation:allocation,savedLoads:Array.isArray(d.savedLoads)?d.savedLoads:[],
+  bodyRecords:Array.isArray(d.bodyRecords)?d.bodyRecords:[],
+  nutritionRecords:Array.isArray(d.nutritionRecords)?d.nutritionRecords:[]};
 }
 function readDemo(){try{return normalize(JSON.parse(localStorage.getItem(localKey)||'null')?.data);}catch{return defaultData();}}
 function readLogs(){try{return JSON.parse(localStorage.getItem(localKey)||'null')?.logs||[];}catch{return [];}}
 const state={page:'inicio',day:currentDay(),muscle:'Todos',search:'',visibleCatalog:36,remoteExercises:[],remoteState:'loading',
  demo:!configured,user:null,authMode:'login',authBusy:false,
  data:readDemo(),logs:readLogs(),modal:null,toast:'',calcPole1:40,calcPole2:40,calcBusy:false,calcResult:null,
- training:false,draft:{},progressTab:'cuerpo',bodyMetric:'weight',nutritionMetric:'calories',loading:configured,cloudError:'',firebase:null,unsubs:[],saveTimer:null,savePending:false};
+ training:false,draft:{},progressTab:'cuerpo',bodyMetric:'weight',nutritionMetric:'calories',loading:configured,cloudError:'',firebase:null,unsubs:[],saveTimer:null,savePending:false,
+  remoteReady:false,syncedData:null,saveInFlight:false,saveQueued:false,currentSavePromise:null,writeLocked:false,saveError:'',authGeneration:0};
 
 try{applyTheme(localStorage.getItem(themeKey)||'verde');}catch{applyTheme('verde');}
 
@@ -133,21 +134,118 @@ function getEx(id){
 }
 function getList(day=state.day){return Array.isArray(state.data.routine[day])?state.data.routine[day]:[];}
 function notify(message){const node=$('#toast');node.textContent=message;node.classList.add('show');clearTimeout(notify.timer);notify.timer=setTimeout(()=>node.classList.remove('show'),3500);}
+// Evita descartar silenciosamente registros anteriores con un esquema distinto.
+function validateStoredData(raw){
+ if(!raw||typeof raw!=='object'||Array.isArray(raw))throw Error('Datos almacenados con un formato no reconocido. No se ha sobrescrito nada.');
+ for(const key of ['inventory','customExercises','savedLoads','bodyRecords','nutritionRecords']){
+  if(Object.hasOwn(raw,key)&&!Array.isArray(raw[key]))throw Error(`El campo ${key} tiene un formato inesperado. Se ha bloqueado la escritura para protegerlo.`);
+ }
+ for(const key of ['bodyRecords','nutritionRecords']){
+  if((raw[key]||[]).some(x=>!x||typeof x!=='object'||typeof x.id!=='string'))
+   throw Error(`El campo ${key} contiene registros antiguos o incompatibles. No se han eliminado.`);
+ }
+ if(raw.routine!==undefined){
+  if(!raw.routine||typeof raw.routine!=='object'||Array.isArray(raw.routine))throw Error('La rutina tiene un formato inesperado.');
+  if(Object.values(raw.routine).some(day=>!Array.isArray(day)))throw Error('Un día de la rutina tiene un formato inesperado.');
+ }
+ return normalize(raw);
+}
+const sameData=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+// Cada día de rutina se considera independiente: editar el lunes no escribe el martes.
+function dataChanges(before,after){
+ const changes=[];
+ for(const key of new Set([...Object.keys(before||{}),...Object.keys(after||{})])){
+  if(key==='routine'){
+   const a=before?.routine||{},b=after?.routine||{};
+   for(const day of new Set([...Object.keys(a),...Object.keys(b)])){
+    if(!sameData(a[day],b[day]))changes.push({path:['routine',day],before:a[day],value:b[day]});
+   }
+  }else if(!sameData(before?.[key],after?.[key])){
+   changes.push({path:[key],before:before?.[key],value:after?.[key]});
+  }
+ }
+ return changes;
+}
+function readChange(data,path){return path.reduce((v,key)=>v?.[key],data);}
+function mergeUnchanged(base,local,remote){
+ const result=clone(remote);
+ for(const change of dataChanges(base,local)){
+  if(change.path[0]==='routine'&&change.path.length===2){
+   result.routine??={};result.routine[change.path[1]]=clone(change.value);
+  }else result[change.path[0]]=clone(change.value);
+ }
+ return result;
+}
+function applyChanges(server,changes){
+ const result=clone(server);
+ for(const change of changes){
+  if(change.path.length===2){result[change.path[0]]??={};result[change.path[0]][change.path[1]]=clone(change.value);}
+  else result[change.path[0]]=clone(change.value);
+ }
+ return result;
+}
+function lockWrites(message){
+ state.writeLocked=true;state.saveError=message;state.savePending=false;
+ clearTimeout(state.saveTimer);render();
+}
 function saveData(){
  if(state.demo||!configured){localStorage.setItem(localKey,JSON.stringify({data:state.data,logs:state.logs}));return;}
- if(!state.user||!state.firebase)return;
+ if(!state.user||!state.firebase||!state.remoteReady||state.writeLocked){
+  notify('Guardado bloqueado para proteger tus datos. Exporta una copia y revisa la conexión.');return;
+ }
  state.savePending=true;clearTimeout(state.saveTimer);
- state.saveTimer=setTimeout(async()=>{
-  const current=clone(state.data);state.savePending=false;
-  try{const {api,db}=state.firebase;await api.setDoc(api.doc(db,'users',state.user.uid,'data','main'),current,{merge:false});}
-  catch(e){notify('No se han sincronizado los cambios: '+humanError(e));}
- },600);
+ state.saveTimer=setTimeout(()=>{void flushData();},600);
+}
+async function flushData(){
+ if(state.saveInFlight){state.saveQueued=true;return state.currentSavePromise;}
+ if(!state.savePending||!state.user||!state.firebase||!state.remoteReady||state.writeLocked)return;
+ const before=clone(state.syncedData),captured=clone(state.data),changes=dataChanges(before,captured);
+ if(!changes.length){state.savePending=false;state.saveQueued=false;render();return;}
+ const generation=state.authGeneration,ownerUid=state.user.uid,{api,db}=state.firebase;
+ const ref=api.doc(db,'users',ownerUid,'data','main');
+ state.saveInFlight=true;
+ const task=api.runTransaction(db,async transaction=>{
+  const snapshot=await transaction.get(ref);
+  if(generation!==state.authGeneration||state.user?.uid!==ownerUid)throw Error('La sesión ha cambiado durante el guardado.');
+  if(!snapshot.exists())throw Error('El documento ha desaparecido del servidor. Guardado bloqueado.');
+  const server=validateStoredData(snapshot.data());
+  for(const change of changes){
+   if(!sameData(readChange(server,change.path),change.before)){
+    throw Error(`Conflicto de sincronización en ${change.path.join('.')}. Se ha evitado sobrescribir cambios de otra sesión.`);
+   }
+  }
+  const updates={};
+  for(const change of changes)updates[change.path.join('.')]=change.value;
+  transaction.update(ref,updates);
+  // Solo produce datos. No modifica state desde el callback (puede repetirse).
+  return applyChanges(server,changes);
+ });
+ state.currentSavePromise=task;
+ try{
+  const saved=await task;
+  if(generation!==state.authGeneration||state.user?.uid!==ownerUid)return;
+  state.syncedData=clone(saved);
+  state.data=mergeUnchanged(before,state.data,saved);
+  if(!dataChanges(state.syncedData,state.data).length){state.savePending=false;state.saveQueued=false;}
+  else state.saveQueued=true;
+  render();
+ }catch(e){
+  if(generation===state.authGeneration){
+   lockWrites('No se han guardado cambios porque '+humanError(e)+'. Los datos visibles pueden ser locales. Exporta una copia y solicita revisión antes de recargar.');
+  }
+ }finally{
+  if(generation===state.authGeneration){
+   state.saveInFlight=false;state.currentSavePromise=null;
+   if(state.saveQueued&&!state.writeLocked&&state.savePending){state.saveQueued=false;clearTimeout(state.saveTimer);state.saveTimer=setTimeout(()=>{void flushData();},0);}
+  }
+ }
 }
 async function saveLog(log){
- state.logs=[log,...state.logs].slice(0,200);
- if(state.demo||!configured){saveData();return;}
- try{const {api,db}=state.firebase;await api.setDoc(api.doc(db,'users',state.user.uid,'logs',log.id),log);}
- catch(e){notify('Error al guardar el entrenamiento: '+humanError(e));}
+ if(state.demo||!configured){state.logs=[log,...state.logs].slice(0,200);saveData();return true;}
+ if(!state.user||!state.firebase||!state.remoteReady||state.writeLocked){notify('No se puede guardar el entrenamiento sin sincronización.');return false;}
+ const {api,db}=state.firebase,ownerUid=state.user.uid;
+ try{await api.setDoc(api.doc(db,'users',ownerUid,'logs',log.id),log);return true;}
+ catch(e){notify('Error al guardar el entrenamiento: '+humanError(e));return false;}
 }
 function humanError(e){const c=e?.code||'';
  if(c.includes('invalid-email'))return 'Correo no válido';
@@ -162,7 +260,7 @@ function humanError(e){const c=e?.code||'';
 
 function header(){
  const label=state.page==='inicio'?'Tu espacio de entrenamiento':nav.find(x=>x[0]===state.page)?.[2]||'ForgeFit';
- return `<header class="topbar"><div><div class="eyebrow">${state.page==='inicio'?esc(today()):'FORGEFIT / ENTRENAMIENTO'}</div><h1>${esc(label)}</h1></div><div class="top-actions"><span class="cloud-state">${I(state.demo?'info':'cloud',15)} ${state.demo?'Local':'Sincronizado'}</span><button class="avatar" title="Ajustes" data-nav="ajustes">${esc((state.data.profile.name||'T').slice(0,1).toUpperCase())}</button></div></header>`;
+ return `<header class="topbar"><div><div class="eyebrow">${state.page==='inicio'?esc(today()):'FORGEFIT / ENTRENAMIENTO'}</div><h1>${esc(label)}</h1></div><div class="top-actions"><span class="cloud-state">${I(state.demo?'info':'cloud',15)} ${state.demo?'Local':state.writeLocked?'Guardado bloqueado':state.savePending?'Guardando…':state.remoteReady?'Sincronizado':'Conectando…'}</span><button class="avatar" title="Ajustes" data-nav="ajustes">${esc((state.data.profile.name||'T').slice(0,1).toUpperCase())}</button></div></header>`;
 }
 function sidebar(){return `<aside class="sidebar"><button class="brand" data-nav="inicio"><span class="brand-icon">${I('dumbbell',27)}</span><span><strong>FORGE<span>FIT</span></strong><small>TRAIN YOUR WAY</small></span></button><div class="sidebar-label">TU ESPACIO</div><nav class="desktop-nav">${nav.map(([page,ico,title])=>`<button class="navlink ${state.page===page?'active':''}" data-nav="${page}">${I(ico)}<span>${title}</span>${state.page===page?'<i></i>':''}</button>`).join('')}</nav><div class="sidebar-foot"><div class="sidebar-quote"><span>${I('bolt')}</span><strong>Cada repetición cuenta.</strong><small>Hazlo por ti.</small></div><small>v3.0 · Hecho para entrenar</small></div></aside>`;}
 function mobileNav(){return `<nav class="mobile-nav" aria-label="Secciones">${nav.slice(0,5).map(([page,ico,title])=>`<button data-nav="${page}" class="${state.page===page?'active':''}">${I(ico,21)}<small>${page==='calculadora'?'Discos':page==='ejercicios'?'Buscar':title.replace('Mi ','')}</small></button>`).join('')}</nav>`;}
@@ -323,7 +421,7 @@ function themeSettings(){
 }
 function settings(){return `<div class="section-intro"><div><p>TODO A TU MEDIDA</p><h2>Personaliza tu gimnasio.</h2><span>Cambia los colores, tus datos, discos disponibles y copias de seguridad.</span></div></div><div class="settings-grid">${themeSettings()}<div class="panel"><div class="panel-heading"><h3>Tu perfil</h3><span class="mini-icon">${I('user')}</span></div><div class="fields"><label>Nombre visible<input id="profileName" maxlength="40" value="${esc(state.data.profile.name)}"/></label><label>Objetivo<input id="profileGoal" maxlength="80" value="${esc(state.data.profile.goal)}"/></label></div><button class="btn btn-primary" data-action="save-profile">${I('check',16)} Guardar perfil</button><div class="divider-line"></div><div class="profile-status">${I(state.demo?'info':'cloud')}<div><strong>${state.demo?'Modo de prueba · almacenamiento local':'Cuenta con sincronización'}</strong><small>${state.demo?'Los datos de esta demo se guardan solo en este navegador.':esc(state.user?.email||'Conectado a Firebase')}</small></div></div>${configured?`<button class="btn btn-secondary" data-action="${state.demo?'show-login':'logout'}">${I(state.demo?'user':'logout',17)} ${state.demo?'Entrar con cuenta':'Cerrar sesión'}</button>`:''}</div>
  <div class="panel"><div class="panel-heading"><h3>Inventario de discos</h3><span class="mini-icon">${I('dumbbell')}</span></div><p class="settings-description">Estos valores son los de tus discos reales. Cambia cantidades cuando compres o retires alguno.</p><div class="inventory-list">${state.data.inventory.map((p,i)=>`<label class="inventory-row"><span><span class="mini-plate"></span>${fmt(p.kg)} kg</span><span class="counter"><button data-action="adjust-stock" data-index="${i}" data-value="-1" aria-label="Quitar disco de ${fmt(p.kg)} kg">−</button><input aria-label="Cantidad de ${fmt(p.kg)} kg" data-stock="${i}" type="number" min="0" max="100" value="${toInt(p.count)}"/><button data-action="adjust-stock" data-index="${i}" data-value="1" aria-label="Añadir disco de ${fmt(p.kg)} kg">+</button></span></label>`).join('')}</div><div class="inventory-total"><span>Total disponible</span><strong>${kg(inventoryTotal(state.data.inventory))}</strong></div><div class="settings-buttons"><button class="btn btn-secondary" data-action="reset-stock">Restablecer inventario</button><button class="btn btn-primary" data-nav="calculadora">Usar calculadora ${I('arrow',15)}</button></div></div>
- <div class="panel"><div class="panel-heading"><h3>Datos y copias de seguridad</h3><span class="mini-icon">${I('download')}</span></div><p class="settings-description">Descarga tus rutinas e historial a un archivo JSON o restaura una copia creada desde esta app.</p><div class="settings-buttons"><button class="btn btn-secondary" data-action="export">${I('download',17)} Exportar mis datos</button><button class="btn btn-secondary" data-action="import">${I('upload',17)} Importar copia</button><input type="file" id="backupFile" accept="application/json,.json" hidden/></div><p class="helper-note">Las importaciones sustituyen tus rutinas, inventario e historial actuales. No exportamos contraseñas.</p></div>
+ <div class="panel"><div class="panel-heading"><h3>Datos y copias de seguridad</h3><span class="mini-icon">${I('download')}</span></div><p class="settings-description">Descarga tus rutinas e historial a un archivo JSON o restaura una copia creada desde esta app.</p><div class="settings-buttons"><button class="btn btn-secondary" data-action="export">${I('download',17)} Exportar mis datos</button><button class="btn btn-secondary" data-action="import">${I('upload',17)} Importar copia</button><input type="file" id="backupFile" accept="application/json,.json" hidden/></div><p class="helper-note">Las importaciones sustituyen tu rutina y configuración, pero conservan los entrenamientos anteriores del historial. No exportamos contraseñas.</p></div>
  <div class="panel"><div class="panel-heading"><h3>Instalar en iPhone</h3><span class="mini-icon">${I('heart')}</span></div><p class="settings-description">Abre la web publicada en <strong>Safari</strong>, pulsa <strong>Compartir</strong> y elige <strong>Añadir a pantalla de inicio</strong>. Se abrirá a pantalla completa como una aplicación.</p><div class="notice">${I('info',17)} En un iPhone no se abre la dirección de tu repositorio GitHub. Se abre la URL pública de GitHub Pages.</div></div></div>`;}
 function training(){const entries=getList(state.trainingDay||state.day);
  return `<div class="training-banner"><div><div class="eyebrow">SESIÓN EN CURSO</div><h2>Entrenamiento de ${esc(state.trainingDay||state.day)}</h2><p>Registra el peso y las repeticiones reales de cada serie.</p></div><button class="btn btn-secondary" data-action="stop-training">Salir</button></div><div class="training-list">${entries.map((entry,i)=>{const ex=getEx(entry.id);const draft=state.draft[i]||[];return `<div class="panel training-card"><div class="training-title">${art(ex,'tiny')}<div><span class="eyebrow">EJERCICIO ${i+1}</span><h3>${esc(ex.name)}</h3><p>${entry.sets} series planificadas</p></div></div><div class="set-head"><span>SERIE</span><span>REPETICIONES</span><span>PESO (KG)</span></div>${draft.map((set,j)=>`<div class="set-row"><span>${j+1}</span><input data-draft="reps" data-exindex="${i}" data-setindex="${j}" type="number" min="0" max="999" inputmode="numeric" value="${esc(set.reps)}"/><input data-draft="kg" data-exindex="${i}" data-setindex="${j}" type="number" min="0" max="9999" step="0.25" inputmode="decimal" value="${esc(set.kg)}"/></div>`).join('')}<button class="small-link" data-action="add-set" data-exindex="${i}">${I('plus',15)} Añadir serie</button></div>`}).join('')}</div><div class="training-footer"><button class="btn btn-primary" data-action="finish-training">${I('check',19)} Guardar entrenamiento</button></div>`;}
@@ -372,7 +470,7 @@ function render(){
  if(state.loading){root.innerHTML='<div class="loader"><div class="spinner"></div><h2>ForgeFit</h2><p>Cargando tus datos...</p></div>';return;}
  if(state.cloudError && !state.demo){root.innerHTML=`<div class="loader"><h2>No se pudo conectar a Firebase</h2><p>${esc(state.cloudError)}</p><p>Revisa la conexión o contacta con el administrador.</p></div>`;return;}
  if(configured&&!state.demo&&!state.user){root.innerHTML=authView();return;}
- root.innerHTML=`<div class="app-shell">${sidebar()}<div class="main-shell">${header()}<main class="content">${state.training?training():state.page==='inicio'?dashboard():state.page==='rutina'?weekView():state.page==='ejercicios'?library():state.page==='calculadora'?calculator():state.page==='historial'?history():settings()}</main><footer class="app-footer"><span>FORGEFIT · ENTRENAMIENTO INTELIGENTE</span><span>Construye tu progreso, día a día.</span></footer></div>${mobileNav()}</div>${renderModal()}`;
+ root.innerHTML=`<div class="app-shell">${sidebar()}<div class="main-shell">${header()}${state.writeLocked?`<div class="notice" role="alert" style="margin:16px 24px">${I('info',18)} <span>${esc(state.saveError)}</span> <button class="btn btn-secondary" data-action="export">Exportar copia local</button></div>`:''}<main class="content">${state.training?training():state.page==='inicio'?dashboard():state.page==='rutina'?weekView():state.page==='ejercicios'?library():state.page==='calculadora'?calculator():state.page==='historial'?history():settings()}</main><footer class="app-footer"><span>FORGEFIT · ENTRENAMIENTO INTELIGENTE</span><span>Construye tu progreso, día a día.</span></footer></div>${mobileNav()}</div>${renderModal()}`;
 }
 
 async function recalc(){
@@ -422,24 +520,53 @@ async function startFirebase(){
   const app=appApi.initializeApp(firebaseConfig),auth=authApi.getAuth(app),db=api.getFirestore(app);
   state.firebase={auth,authApi,api,db};
   authApi.onAuthStateChanged(auth,async user=>{
+   const generation=++state.authGeneration;
    state.unsubs.forEach(f=>f());state.unsubs=[];
-   state.user=user;state.training=false;
-   if(!user){state.loading=false;render();return;}
+   clearTimeout(state.saveTimer);
+   state.saveTimer=null;state.savePending=false;state.saveQueued=false;state.saveInFlight=false;state.currentSavePromise=null;
+   state.remoteReady=false;state.syncedData=null;state.writeLocked=false;state.saveError='';state.cloudError='';
+   state.user=user;state.training=false;state.logs=[];
+   if(!user){state.data=defaultData();state.loading=false;render();return;}
    state.demo=false;state.loading=true;render();
    const ref=api.doc(db,'users',user.uid,'data','main');
-   const unsubscribe=api.onSnapshot(ref,async snapshot=>{
-    if(snapshot.exists()){
-     if(!state.savePending){state.data=normalize(snapshot.data());applyTheme(state.data.theme);}
-    }else{
+   try{
+    // Lectura confirmada por el servidor: nunca inicializar desde una caché vacía.
+    let snapshot=await api.getDocFromServer(ref);
+    if(generation!==state.authGeneration)return;
+    if(!snapshot.exists()){
      const fresh=defaultData();fresh.profile.name=user.displayName||user.email?.split('@')[0]||'Deportista';
-     state.data=fresh;applyTheme(state.data.theme);
-     try{await api.setDoc(ref,fresh);}catch(e){notify('Revisa las reglas de Firestore: '+humanError(e));}
+     await api.runTransaction(db,async tx=>{
+      const current=await tx.get(ref);
+      if(!current.exists())tx.set(ref,fresh);
+     });
+     snapshot=await api.getDocFromServer(ref);
+     if(generation!==state.authGeneration)return;
+     if(!snapshot.exists())throw Error('No se pudo inicializar el documento de la cuenta.');
     }
-    state.loading=false;render();
-   },error=>{state.loading=false;state.cloudError=humanError(error);render();});
-   state.unsubs.push(unsubscribe);
-   const query=api.query(api.collection(db,'users',user.uid,'logs'),api.orderBy('date','desc'),api.limit(200));
-   state.unsubs.push(api.onSnapshot(query,snapshot=>{state.logs=snapshot.docs.map(d=>d.data());render();},error=>notify('Error leyendo el historial: '+humanError(error))));
+    state.data=validateStoredData(snapshot.data());state.syncedData=clone(state.data);
+    state.remoteReady=true;state.loading=false;applyTheme(state.data.theme);render();
+    const unsubscribe=api.onSnapshot(ref,{includeMetadataChanges:true},remote=>{
+     if(generation!==state.authGeneration)return;
+     if(remote.metadata.fromCache||remote.metadata.hasPendingWrites)return;
+     if(!remote.exists()){
+      lockWrites('El documento de tu cuenta no existe en el servidor. No se crearán datos vacíos automáticamente.');return;
+     }
+     try{
+      const incoming=validateStoredData(remote.data());
+      if(!state.savePending&&!state.saveInFlight){state.data=incoming;state.syncedData=clone(incoming);applyTheme(state.data.theme);render();}
+      // Si hay cambios locales pendientes, la transacción comprueba conflictos.
+     }catch(e){lockWrites(humanError(e));}
+    },error=>lockWrites('Error escuchando tus datos: '+humanError(error)));
+    state.unsubs.push(unsubscribe);
+    const query=api.query(api.collection(db,'users',user.uid,'logs'),api.orderBy('date','desc'),api.limit(200));
+    state.unsubs.push(api.onSnapshot(query,snapshot=>{
+     if(generation!==state.authGeneration)return;
+     state.logs=snapshot.docs.map(d=>d.data());render();
+    },error=>notify('Error leyendo el historial: '+humanError(error))));
+   }catch(e){
+    if(generation!==state.authGeneration)return;
+    state.loading=false;state.remoteReady=false;state.cloudError=humanError(e);render();
+   }
   });
  }catch(e){state.loading=false;state.cloudError=humanError(e);render();}
 }
@@ -455,7 +582,12 @@ root.addEventListener('click',async e=>{
  if(act==='auth-mode'){state.authMode=node.dataset.value==='reset'?'reset':'login';render();return;}
  if(act==='demo'){if(configured)return;state.demo=true;state.loading=false;state.cloudError='';state.data=readDemo();state.logs=readLogs();render();return;}
  if(act==='show-login'){state.demo=false;state.user=null;state.authMode='login';render();return;}
- if(act==='logout'&&state.firebase){clearTimeout(state.saveTimer);await state.firebase.authApi.signOut(state.firebase.auth);state.user=null;state.authMode='login';state.demo=false;state.page='inicio';render();return;}
+ if(act==='logout'&&state.firebase){
+  if(state.writeLocked){notify('No puedes cerrar sesión con un conflicto pendiente. Exporta los datos antes.');return;}
+  if(state.savePending){clearTimeout(state.saveTimer);await flushData();if(state.saveInFlight&&state.currentSavePromise)await state.currentSavePromise;}
+  if(state.savePending||state.writeLocked){notify('Hay cambios sin guardar. Exporta una copia antes de cerrar sesión.');return;}
+  await state.firebase.authApi.signOut(state.firebase.auth);state.authMode='login';state.page='inicio';return;
+ }
  if(act==='progress-tab'){state.progressTab=['entrenamientos','cuerpo','nutricion'].includes(node.dataset.value)?node.dataset.value:'cuerpo';render();return;}
  if(act==='add-nutrition'){state.modal={type:'nutrition'};render();updateNutritionMath();return;}
  if(act==='edit-nutrition'){state.modal={type:'nutrition',id:node.dataset.id};render();updateNutritionMath();return;}
@@ -485,7 +617,7 @@ root.addEventListener('click',async e=>{
  if(act==='add-set'){const i=Number(node.dataset.exindex),last=state.draft[i].at(-1)||{reps:10,kg:0};state.draft[i].push({...last});render();return;}
  if(act==='finish-training'){
   const day=state.trainingDay||state.day;const exercises=getList(day).map((ex,i)=>({id:ex.id,sets:clone(state.draft[i]||[])}));
-  const log={id:uid(),date:stamp(),day,exercises};await saveLog(log);state.training=false;state.page='historial';render();notify('¡Entrenamiento guardado!');return;
+  const log={id:uid(),date:stamp(),day,exercises};if(!await saveLog(log))return;state.training=false;state.page='historial';render();notify('¡Entrenamiento guardado!');return;
  }
  if(act==='preset-two'){state.calcPole1=Number(node.dataset.first);state.calcPole2=Number(node.dataset.second);await recalc();return;}
  if(act==='calculate'){
@@ -613,18 +745,23 @@ root.addEventListener('change',e=>{
    try{
     const json=JSON.parse(text);
     if(json.app!=='ForgeFit'||!json.data||!Array.isArray(json.logs))throw Error('El archivo no es una copia válida de ForgeFit.');
-    if(!confirm('Se sustituirán tu rutina, inventario e historial. ¿Continuar?'))return;
-    state.data=normalize(json.data);applyTheme(state.data.theme);state.logs=json.logs.filter(x=>x&&typeof x==='object'&&typeof x.id==='string').slice(0,200);
-    state.calcResult=null;saveData();
+    const imported=validateStoredData(json.data);
+    const importingUid=state.user?.uid,importingGeneration=state.authGeneration;
+    if(!state.demo&&(!state.remoteReady||state.writeLocked))throw Error('No se puede importar sin conexión segura al servidor.');
+    if(!confirm('Se sustituirá tu rutina y configuración con la copia. Se CONSERVARÁN los entrenamientos actuales del historial. ¿Continuar?'))return;
+    // Los logs existentes se conservan. No se borran al importar una copia parcial.
     if(!state.demo&&state.firebase){
-     const {api,db}=state.firebase,collectionRef=api.collection(db,'users',state.user.uid,'logs');
-     const old=await api.getDocs(collectionRef),newIds=new Set(state.logs.map(x=>x.id));
-     const batch=api.writeBatch(db);
-     old.docs.filter(d=>!newIds.has(d.id)).forEach(d=>batch.delete(d.ref));
-     state.logs.forEach(log=>batch.set(api.doc(db,'users',state.user.uid,'logs',log.id),log));
-     await batch.commit();
+     const {api,db}=state.firebase,ownerUid=state.user.uid,collectionRef=api.collection(db,'users',ownerUid,'logs');
+     const old=await api.getDocs(collectionRef),existingIds=new Set(old.docs.map(d=>d.id));
+     if(state.authGeneration!==importingGeneration||state.user?.uid!==importingUid)throw Error('La cuenta cambió durante la importación.');
+     const additions=json.logs.filter(x=>x&&typeof x==='object'&&typeof x.id==='string'&&!existingIds.has(x.id)).slice(0,200);
+     if(additions.length){const batch=api.writeBatch(db);additions.forEach(log=>batch.set(api.doc(db,'users',ownerUid,'logs',log.id),log));await batch.commit();}
+    }else{
+     const byId=new Map([...state.logs,...json.logs.filter(x=>x&&typeof x?.id==='string')].map(x=>[x.id,x]));state.logs=[...byId.values()];
     }
-    render();notify('Copia importada correctamente');
+    if(!state.demo&&(state.authGeneration!==importingGeneration||state.user?.uid!==importingUid))throw Error('La cuenta cambió durante la importación.');
+    state.data=imported;applyTheme(state.data.theme);state.calcResult=null;saveData();
+    render();notify('Copia importada. Historial previo conservado.');
    }catch(e){notify('No se pudo importar: '+humanError(e));}
   });
  }
