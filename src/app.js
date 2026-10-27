@@ -36,7 +36,7 @@ function applyTheme(id){
 
 const defaultAlloc=Object.fromEntries([[10,3],[5,4],[3,1],[2.5,3],[2,8],[1.5,2],[1.25,2],[1,12],[0.5,1]].map(([w,n])=>[String(w),n]));
 const configured=Boolean(firebaseConfig.apiKey && firebaseConfig.projectId && firebaseConfig.appId);
-const clone=value=>JSON.parse(JSON.stringify(value));
+const clone=value=>value===undefined?undefined:JSON.parse(JSON.stringify(value));
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt=value=>Number(value??0).toLocaleString('es-ES',{maximumFractionDigits:2});
 const kg=value=>fmt(value)+' kg';
@@ -65,7 +65,7 @@ const state={page:'inicio',day:currentDay(),muscle:'Todos',search:'',visibleCata
  demo:!configured,user:null,authMode:'login',authBusy:false,
  data:readDemo(),logs:readLogs(),modal:null,toast:'',calcPole1:40,calcPole2:40,calcBusy:false,calcResult:null,
  training:false,draft:{},progressTab:'cuerpo',bodyMetric:'weight',nutritionMetric:'calories',loading:configured,cloudError:'',firebase:null,unsubs:[],saveTimer:null,savePending:false,
-  remoteReady:false,syncedData:null,saveInFlight:false,saveQueued:false,currentSavePromise:null,writeLocked:false,saveError:'',authGeneration:0};
+  remoteReady:false,syncedData:null,saveInFlight:false,saveQueued:false,currentSavePromise:null,writeLocked:false,saveError:'',authGeneration:0,saveRetryCount:0,syncIssue:''};
 
 try{applyTheme(localStorage.getItem(themeKey)||'verde');}catch{applyTheme('verde');}
 
@@ -186,7 +186,8 @@ function keyed(list,kind){
    if(typeof item.entryUid==='string'&&item.entryUid)key='uid:'+item.entryUid;
    else{const raw=String(item.id||'desconocido');const count=seen.get(raw)||0;seen.set(raw,count+1);key='legacy:'+raw+':'+count;}
   }else if(kind==='inventory')key='kg:'+String(item.kg);
-  else key='id:'+String(item.id);
+  else if(typeof item.id==='string'&&item.id)key='id:'+item.id;
+  else{const fingerprint=JSON.stringify(canonicalData(item));const count=seen.get(fingerprint)||0;seen.set(fingerprint,count+1);key='legacy:'+fingerprint+':'+count;}
   result.set(key,item);
  }
  return result;
@@ -251,32 +252,35 @@ function mergeIntent(base,local,remote){
  return result;
 }
 function lockWrites(message){
- state.writeLocked=true;state.saveError=message;state.savePending=false;
+ state.writeLocked=true;state.saveError=message;state.syncIssue='';state.savePending=false;
  clearTimeout(state.saveTimer);render();
+}
+function retryableSaveError(e){
+ const code=String(e?.code||'');
+ return ['unavailable','deadline-exceeded','aborted','resource-exhausted','cancelled','network-request-failed'].some(x=>code.includes(x));
 }
 function saveData(){
  if(state.demo||!configured){localStorage.setItem(localKey,JSON.stringify({data:state.data,logs:state.logs}));return;}
  if(!state.user||!state.firebase||!state.remoteReady||state.writeLocked){
   notify('Guardado bloqueado para proteger tus datos. Exporta una copia y revisa la conexión.');return;
  }
- state.savePending=true;clearTimeout(state.saveTimer);
+ state.savePending=true;state.syncIssue='';state.saveRetryCount=0;clearTimeout(state.saveTimer);
  state.saveTimer=setTimeout(()=>{void flushData();},600);
 }
 async function flushData(){
  if(state.saveInFlight){state.saveQueued=true;return state.currentSavePromise;}
  if(!state.savePending||!state.user||!state.firebase||!state.remoteReady||state.writeLocked)return;
  const before=clone(state.syncedData),captured=clone(state.data),changes=dataChanges(before,captured);
- if(!changes.length){state.savePending=false;state.saveQueued=false;render();return;}
+ if(!changes.length){state.savePending=false;state.saveQueued=false;state.syncIssue='';state.saveRetryCount=0;render();return;}
  const generation=state.authGeneration,ownerUid=state.user.uid,{api,db}=state.firebase;
  const ref=api.doc(db,'users',ownerUid,'data','main');
- state.saveInFlight=true;
+ state.saveInFlight=true;state.syncIssue='';
+ let planRetry=false;
  const task=api.runTransaction(db,async transaction=>{
   const snapshot=await transaction.get(ref);
-  if(generation!==state.authGeneration||state.user?.uid!==ownerUid)throw Error('La sesión ha cambiado durante el guardado.');
-  if(!snapshot.exists())throw Error('El documento ha desaparecido del servidor. Guardado bloqueado.');
+  if(generation!==state.authGeneration||state.user?.uid!==ownerUid)throw Error('La sesión cambió durante el guardado.');
+  if(!snapshot.exists())throw Error('El documento ha desaparecido del servidor. No se ha sobrescrito nada.');
   const server=validateStoredData(snapshot.data());
-  // Rebase atómico contra la versión MÁS RECIENTE de Firebase. Las inserciones
-  // de ambas sesiones se conservan aunque ocurran en el mismo día.
   const merged=mergeIntent(before,captured,server);
   const updates={};
   for(const change of dataChanges(server,merged)){
@@ -292,17 +296,30 @@ async function flushData(){
   if(generation!==state.authGeneration||state.user?.uid!==ownerUid)return;
   state.syncedData=clone(saved);
   state.data=mergeIntent(captured,state.data,saved);
+  state.syncIssue='';state.saveRetryCount=0;
   if(!dataChanges(state.syncedData,state.data).length){state.savePending=false;state.saveQueued=false;}
-  else state.saveQueued=true;
+  else{state.savePending=true;state.saveQueued=true;}
   render();
  }catch(e){
   if(generation===state.authGeneration){
-   lockWrites('No se han guardado cambios porque '+humanError(e)+'. Los datos visibles pueden ser locales. Exporta una copia y solicita revisión antes de recargar.');
+   if(retryableSaveError(e)){
+    state.savePending=true;
+    state.saveRetryCount++;
+    planRetry=state.saveRetryCount<=4;
+    state.syncIssue='Firebase no ha confirmado el guardado: '+humanError(e)+'. '+(planRetry?'Se reintentará de forma segura.':'Pulsa Reintentar o exporta una copia antes de cerrar.');
+    render();
+   }else{
+    lockWrites('No se han guardado cambios: '+humanError(e)+'. Los datos que ves pueden ser locales. Exporta una copia antes de recargar.');
+   }
   }
  }finally{
   if(generation===state.authGeneration){
    state.saveInFlight=false;state.currentSavePromise=null;
-   if(state.saveQueued&&!state.writeLocked&&state.savePending){state.saveQueued=false;clearTimeout(state.saveTimer);state.saveTimer=setTimeout(()=>{void flushData();},0);}
+   if(!state.writeLocked&&state.savePending){
+    clearTimeout(state.saveTimer);
+    if(planRetry){const ms=Math.min(state.saveRetryCount*1500,8000);state.saveTimer=setTimeout(()=>{void flushData();},ms);}
+    else if(state.saveQueued&&!state.syncIssue){state.saveQueued=false;state.saveTimer=setTimeout(()=>{void flushData();},0);}
+   }
   }
  }
 }
@@ -326,9 +343,9 @@ function humanError(e){const c=e?.code||'';
 
 function header(){
  const label=state.page==='inicio'?'Tu espacio de entrenamiento':nav.find(x=>x[0]===state.page)?.[2]||'ForgeFit';
- return `<header class="topbar"><div><div class="eyebrow">${state.page==='inicio'?esc(today()):'FORGEFIT / ENTRENAMIENTO'}</div><h1>${esc(label)}</h1></div><div class="top-actions"><span class="cloud-state">${I(state.demo?'info':'cloud',15)} ${state.demo?'Local':state.writeLocked?'Guardado bloqueado':(state.savePending||state.saveInFlight)?'Guardando…':state.remoteReady?'Sincronizado':'Conectando…'}</span><button class="avatar" title="Ajustes" data-nav="ajustes">${esc((state.data.profile.name||'T').slice(0,1).toUpperCase())}</button></div></header>`;
+ return `<header class="topbar"><div><div class="eyebrow">${state.page==='inicio'?esc(today()):'FORGEFIT / ENTRENAMIENTO'}</div><h1>${esc(label)}</h1></div><div class="top-actions"><span class="cloud-state">${I(state.demo?'info':'cloud',15)} ${state.demo?'Local':state.writeLocked?'Guardado bloqueado':state.syncIssue?'Sin confirmar':(state.savePending||state.saveInFlight)?'Guardando…':state.remoteReady?'Sincronizado':'Conectando…'}</span><button class="avatar" title="Ajustes" data-nav="ajustes">${esc((state.data.profile.name||'T').slice(0,1).toUpperCase())}</button></div></header>`;
 }
-function sidebar(){return `<aside class="sidebar"><button class="brand" data-nav="inicio"><span class="brand-icon">${I('dumbbell',27)}</span><span><strong>FORGE<span>FIT</span></strong><small>TRAIN YOUR WAY</small></span></button><div class="sidebar-label">TU ESPACIO</div><nav class="desktop-nav">${nav.map(([page,ico,title])=>`<button class="navlink ${state.page===page?'active':''}" data-nav="${page}">${I(ico)}<span>${title}</span>${state.page===page?'<i></i>':''}</button>`).join('')}</nav><div class="sidebar-foot"><div class="sidebar-quote"><span>${I('bolt')}</span><strong>Cada repetición cuenta.</strong><small>Hazlo por ti.</small></div><small>v3.0 · Hecho para entrenar</small></div></aside>`;}
+function sidebar(){return `<aside class="sidebar"><button class="brand" data-nav="inicio"><span class="brand-icon">${I('dumbbell',27)}</span><span><strong>FORGE<span>FIT</span></strong><small>TRAIN YOUR WAY</small></span></button><div class="sidebar-label">TU ESPACIO</div><nav class="desktop-nav">${nav.map(([page,ico,title])=>`<button class="navlink ${state.page===page?'active':''}" data-nav="${page}">${I(ico)}<span>${title}</span>${state.page===page?'<i></i>':''}</button>`).join('')}</nav><div class="sidebar-foot"><div class="sidebar-quote"><span>${I('bolt')}</span><strong>Cada repetición cuenta.</strong><small>Hazlo por ti.</small></div><small>v7 · Sincronización multisesión</small></div></aside>`;}
 function mobileNav(){return `<nav class="mobile-nav" aria-label="Secciones">${nav.slice(0,5).map(([page,ico,title])=>`<button data-nav="${page}" class="${state.page===page?'active':''}">${I(ico,21)}<small>${page==='calculadora'?'Discos':page==='ejercicios'?'Buscar':title.replace('Mi ','')}</small></button>`).join('')}</nav>`;}
 function stat(label,value,ico,detail){return `<div class="stat-card"><span class="stat-icon">${I(ico,20)}</span><small>${esc(label)}</small><strong>${esc(value)}</strong><span class="stat-detail">${esc(detail||'')}</span></div>`;}
 function routineCard(item,index,day=state.day,editable=true){
@@ -536,7 +553,7 @@ function render(){
  if(state.loading){root.innerHTML='<div class="loader"><div class="spinner"></div><h2>ForgeFit</h2><p>Cargando tus datos...</p></div>';return;}
  if(state.cloudError && !state.demo){root.innerHTML=`<div class="loader"><h2>No se pudo conectar a Firebase</h2><p>${esc(state.cloudError)}</p><p>Revisa la conexión o contacta con el administrador.</p></div>`;return;}
  if(configured&&!state.demo&&!state.user){root.innerHTML=authView();return;}
- root.innerHTML=`<div class="app-shell">${sidebar()}<div class="main-shell">${header()}${state.writeLocked?`<div class="notice" role="alert" style="margin:16px 24px">${I('info',18)} <span>${esc(state.saveError)}</span> <button class="btn btn-secondary" data-action="export">Exportar copia local</button> <button class="btn btn-secondary" data-action="review-cloud">Comprobar Firebase</button></div>`:''}<main class="content">${state.training?training():state.page==='inicio'?dashboard():state.page==='rutina'?weekView():state.page==='ejercicios'?library():state.page==='calculadora'?calculator():state.page==='historial'?history():settings()}</main><footer class="app-footer"><span>FORGEFIT · ENTRENAMIENTO INTELIGENTE</span><span>Construye tu progreso, día a día.</span></footer></div>${mobileNav()}</div>${renderModal()}`;
+ root.innerHTML=`<div class="app-shell">${sidebar()}<div class="main-shell">${header()}${(state.writeLocked||state.syncIssue)?`<div class="notice" role="alert" style="margin:16px 24px">${I('info',18)} <span>${esc(state.writeLocked?state.saveError:state.syncIssue)}</span> <button class="btn btn-secondary" data-action="export">Exportar copia local</button> ${!state.writeLocked?`<button class="btn btn-secondary" data-action="retry-sync">Reintentar</button>`:''} <button class="btn btn-secondary" data-action="review-cloud">Comprobar Firebase</button></div>`:''}<main class="content">${state.training?training():state.page==='inicio'?dashboard():state.page==='rutina'?weekView():state.page==='ejercicios'?library():state.page==='calculadora'?calculator():state.page==='historial'?history():settings()}</main><footer class="app-footer"><span>FORGEFIT · ENTRENAMIENTO INTELIGENTE</span><span>Construye tu progreso, día a día.</span></footer></div>${mobileNav()}</div>${renderModal()}`;
 }
 
 async function recalc(){
@@ -590,7 +607,7 @@ async function startFirebase(){
    state.unsubs.forEach(f=>f());state.unsubs=[];
    clearTimeout(state.saveTimer);
    state.saveTimer=null;state.savePending=false;state.saveQueued=false;state.saveInFlight=false;state.currentSavePromise=null;
-   state.remoteReady=false;state.syncedData=null;state.writeLocked=false;state.saveError='';state.cloudError='';
+   state.remoteReady=false;state.syncedData=null;state.writeLocked=false;state.saveError='';state.cloudError='';state.syncIssue='';state.saveRetryCount=0;
    state.user=user;state.training=false;state.logs=[];
    if(!user){state.data=defaultData();state.loading=false;render();return;}
    state.demo=false;state.loading=true;render();
@@ -648,6 +665,11 @@ root.addEventListener('click',async e=>{
  // Mientras exista un conflicto no permitir editar sin posibilidad de guardado.
  if(state.writeLocked&&!['export','review-cloud','close-modal','detail','view-log','progress-tab','day-step','logout','auth-mode','show-login'].includes(act)){
   notify('Esta sesión tiene un conflicto. Guarda una copia local y comprueba Firebase antes de continuar.');return;
+ }
+ if(act==='retry-sync'){
+  if(!state.writeLocked&&state.user&&state.remoteReady&&state.savePending){
+   clearTimeout(state.saveTimer);state.saveRetryCount=0;state.syncIssue='';void flushData();render();
+  }return;
  }
  if(act==='review-cloud'){
   if(!state.firebase||!state.user){notify('No hay una sesión de Firebase activa.');return;}
@@ -769,7 +791,7 @@ root.addEventListener('submit',async e=>{
    entry={id:exId,...(m.type==='edit'?(getList(m.day)[m.index].entryUid?{entryUid:getList(m.day)[m.index].entryUid}:{}):(Number.isInteger(m.replaceIndex)&&getList(m.day)?.[m.replaceIndex]?(getList(m.day)[m.replaceIndex].entryUid?{entryUid:getList(m.day)[m.replaceIndex].entryUid}:{}):{entryUid:uid()})),sets:toInt(form.get('sets'),1,20),reps:toInt(form.get('reps'),1,999),kg:toNum(form.get('kg'),0,9999),
    snapshot:{name:ex.name,muscle:ex.muscle,equipment:ex.equipment,tip:ex.tip,media:ex.media}};
   if(m.type==='edit')state.data.routine[m.day][m.index]=entry;else if(Number.isInteger(m.replaceIndex)&&state.data.routine[m.day]?.[m.replaceIndex])state.data.routine[m.day][m.replaceIndex]=entry;else state.data.routine[m.day].push(entry);
-  state.day=m.day;state.modal=null;state.page='rutina';saveData();render();notify('Rutina actualizada');return;
+  state.day=m.day;state.modal=null;state.page='rutina';saveData();render();notify('Cambio pendiente. Espera a ver «Sincronizado».');return;
  }
  if(f.id==='bodyForm'){
   const date=String(form.get('date')||''),weight=Number(form.get('weight'));
@@ -786,7 +808,7 @@ root.addEventListener('submit',async e=>{
   const previous=(state.data.bodyRecords||[]).find(r=>r.id===state.modal?.id);
   const record={id:previous?.id||uid(),date,weight:Math.round(weight*100)/100,measurements,note:String(form.get('note')||'').trim().slice(0,300),createdAt:previous?.createdAt||stamp()};
   if(previous)Object.assign(previous,record);else state.data.bodyRecords=[record,...(state.data.bodyRecords||[])].slice(0,400);
-  state.modal=null;state.progressTab='cuerpo';state.bodyMetric='weight';state.page='historial';saveData();render();notify('Medición guardada en tu cuenta');return;
+  state.modal=null;state.progressTab='cuerpo';state.bodyMetric='weight';state.page='historial';saveData();render();notify('Medición pendiente de sincronizar.');return;
  }
  if(f.id==='nutritionForm'){
   const date=String(form.get('date')||''),goal=String(form.get('goal')||'');
@@ -807,7 +829,7 @@ root.addEventListener('submit',async e=>{
   const record={id:old?.id||collision?.id||uid(),date,goal,...value,weightDate:old?.weightDate??latest?.date,note:String(form.get('note')||'').trim().slice(0,300),createdAt:old?.createdAt||collision?.createdAt||stamp()};
   delete record.ok;
   state.data.nutritionRecords=[...(state.data.nutritionRecords||[]).filter(x=>x.id!==old?.id&&x.id!==collision?.id),record].slice(-500);
-  state.modal=null;state.progressTab='nutricion';state.nutritionMetric='calories';state.page='historial';saveData();render();notify('Objetivo nutricional y macros guardados');return;
+  state.modal=null;state.progressTab='nutricion';state.nutritionMetric='calories';state.page='historial';saveData();render();notify('Objetivo pendiente de sincronizar.');return;
  }
  if(f.id==='customForm'){
   const media=String(form.get('media')||'').trim();
@@ -816,7 +838,7 @@ root.addEventListener('submit',async e=>{
   const current=state.data.customExercises.find(x=>x.id===state.modal?.id);
   const ex={id:current?.id||'custom-'+uid(),name:name.slice(0,90),muscle:String(form.get('muscle')),equipment:String(form.get('equipment')),type:'pull',tip:String(form.get('tip')||'').slice(0,700),media};
   if(current)Object.assign(current,ex);else state.data.customExercises.push(ex);
-  state.modal=null;saveData();render();notify(current?'Ejercicio actualizado':'Ejercicio propio creado');return;
+  state.modal=null;saveData();render();notify('Cambio pendiente de sincronizar.');return;
  }
 
 });
@@ -902,6 +924,11 @@ function focusCalculatorResult(){
   el.scrollIntoView({behavior:reduced?'auto':'smooth',block:'start'});
  });
 }
-if('serviceWorker' in navigator && location.protocol==='https:')navigator.serviceWorker.register('./sw.js').catch(()=>{});
+window.addEventListener('beforeunload',event=>{
+ if(state.user&&(state.savePending||state.saveInFlight||state.writeLocked)){
+  event.preventDefault();event.returnValue='';
+ }
+});
+if('serviceWorker' in navigator && location.protocol==='https:')navigator.serviceWorker.register('./sw.js?v=forgefit-v7-20261027',{updateViaCache:'none'}).then(r=>r.update()).catch(()=>{});
 if(configured)startFirebase();else{state.loading=false;render();}
 loadRemoteExercises();

@@ -1,4 +1,4 @@
-const CACHE='forgefit-shell-v6-auto-merge-20261027';
+const CACHE='forgefit-shell-v7-confirmed-20261027';
 const ASSETS=['./','./index.html','./src/app.js','./src/solver.js','./src/pulley-solver.js','./src/exercise-db.js','./src/catalog.js','./src/styles.css','./firebase-config.js','./manifest.webmanifest','./assets/icon.svg'];
 self.addEventListener('install',event=>{
  event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(ASSETS)).then(()=>self.skipWaiting()));
